@@ -54,11 +54,15 @@ enum UpscaleFidelity: String, CaseIterable, Identifiable {
     var detailLock: Double {
         switch self {
         case .off: return 0
-        case .natural: return 0.25
+        case .natural: return 0.1
         case .faithful: return 1.0
         }
     }
 
+    /// (Natural is now 0.1: Mel's upscale_history showed fidelity-checked
+    /// runs averaging ~50 dB PSNR against the source, i.e. the result shrunk
+    /// back was nearly identical to the original — little added detail.)
+    ///
     /// Halo Guard tolerance in 0-255 levels; nil disables it. `.natural` was
     /// 10 — tight enough to clamp away not just ringing but the edge
     /// contrast that reads as "sharp" to begin with, since this can't tell
@@ -68,7 +72,7 @@ enum UpscaleFidelity: String, CaseIterable, Identifiable {
     var haloTolerance: Int? {
         switch self {
         case .off: return nil
-        case .natural: return 24
+        case .natural: return 40
         case .faithful: return 4
         }
     }

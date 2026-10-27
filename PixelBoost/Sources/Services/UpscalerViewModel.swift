@@ -333,6 +333,7 @@ final class UpscalerViewModel: ObservableObject {
             // Resolve once so this run finishes with the upscaler it
             // started with, even if settings change mid-flight.
             let upscaler = await provider.resolveCurrent(for: input)
+            if let notice = provider.lastFallbackNotice { errorMessage = notice }
             let outcome = await UpscaleRunner.run(
                 input, using: upscaler, sourceFileSizeBytes: sourceFileSizeBytes,
                 denoiseAmount: provider.denoiseBeforeUpscale ? 0.5 : 0,

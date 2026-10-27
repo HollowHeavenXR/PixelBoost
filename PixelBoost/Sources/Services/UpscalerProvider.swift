@@ -425,6 +425,12 @@ final class UpscalerProvider: ObservableObject {
     /// `UpscalerViewModel.compareModels()` — so this only ever reflects a
     /// batch run.
     @Published private(set) var lastAutoSelectedModel: UpscaleModelChoice?
+    /// Set when the last `resolveCurrent` could not use the model the user
+    /// asked for — either a different bundled model stood in, or the plain
+    /// Lanczos resize did. A Lanczos "upscale" finishes almost instantly and
+    /// adds no detail, so it must never happen silently. nil when the
+    /// requested model ran (or Fast/Lanczos was chosen on purpose).
+    @Published private(set) var lastFallbackNotice: String?
 
     /// Every `@Published` setting above records its own change, so
     /// "which settings was this device actually running with" is
@@ -508,10 +514,20 @@ final class UpscalerProvider: ObservableObject {
             choice = modelChoice
         }
 
-        guard let base = await resolvedModel(for: choice, overlap: overlap) else {
-            return LanczosUpscaler(scaleFactor: Double(scaleFactor.rawValue))
+        lastFallbackNotice = nil
+        if let base = await resolvedModel(for: choice, overlap: overlap) {
+            return ScaledOutputUpscaler(base: base, targetScale: scaleFactor.rawValue)
         }
-        return ScaledOutputUpscaler(base: base, targetScale: scaleFactor.rawValue)
+        // The requested model is missing or failed to load. Try every other
+        // bundled model before giving up on super-resolution altogether.
+        for other in UpscaleModelChoice.allCases where other != .auto && other != choice && other.isBundled {
+            if let base = await resolvedModel(for: other, overlap: overlap) {
+                lastFallbackNotice = "\(choice.displayName) couldn't be loaded, so \(other.displayName) was used instead."
+                return ScaledOutputUpscaler(base: base, targetScale: scaleFactor.rawValue)
+            }
+        }
+        lastFallbackNotice = "No super-resolution model could be loaded, so the photo was only resized (no added detail). Reinstall the app or pick a different model."
+        return LanczosUpscaler(scaleFactor: Double(scaleFactor.rawValue))
     }
 
     /// Resolves every *actually bundled* real model at once, each wrapped
