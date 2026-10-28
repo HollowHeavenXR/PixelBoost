@@ -27,3 +27,6 @@ venv/
 # Editor
 .idea/
 result
+
+# local pre-migration copies
+*.pre-migration
