@@ -55,11 +55,26 @@ pub fn stats(img: &Image) -> Stats {
     Stats { flat: flat as f32 / n, edges: edges as f32 / n, texture: tex.get(tex.len() / 2).copied().unwrap_or(0.0) }
 }
 
-pub fn pick_model(img: &Image) -> &'static str {
+/// Content type only: "anime" (drawn) or "photo" (photo / render).
+pub fn content_kind(img: &Image) -> &'static str {
     let s = stats(img);
     if (s.flat > 0.35 && s.texture < 0.013) || s.flat > 0.55 {
         "anime"
     } else {
         "photo"
+    }
+}
+
+/// Model for Auto: the best model for the content whose cost fits a
+/// compute budget (phones run these on the CPU). The heavy 23-block photo
+/// network is used up to ~1 MP; above that the compact general model,
+/// which scores as well on the bench at a fifteenth of the cost.
+pub fn pick_model(img: &Image) -> &'static str {
+    let mp = (img.w * img.h) as f32 / 1e6;
+    match content_kind(img) {
+        "anime" if mp <= 4.0 => "anime",
+        "anime" => "lineart",
+        _ if mp <= 1.0 => "photo",
+        _ => "fast",
     }
 }

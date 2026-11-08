@@ -44,7 +44,14 @@ Models/pbnn/       converted models (fp16 .pbnn)
       a scratch Postgres DB + the app's Rust client round-trip test
 - [ ] First CI build of the new app (Swift written without a local Xcode —
       fix whatever the compiler reports)
-- [ ] Deploy Rust upscaler-bridge on Mel (Python image kept as rollback)
+- [ ] Deploy Rust upscaler-bridge on Mel (Python image kept as rollback) —
+      image built locally (`pixelboost-upscaler-bridge:latest`); the remote
+      deploy was blocked by the session's permission check, needs the user
+- [ ] CI blocked 2026-11-08: GitHub refused to start the macOS job ("recent
+      account payments have failed or your spending limit needs to be
+      increased") — fix billing, then re-run "Build iOS IPA" and tag v5.0.0
+- [x] Auto pick is compute-budgeted: photo net up to 1 MP then "fast";
+      anime net up to 4 MP then "lineart"
 - [ ] GPU backend (wgpu -> Metal) for faster on-device runs of the 23-block models
 - [ ] Own segmentation model for Cutout (currently Vision's subject mask)
 - [ ] Own render-denoise model (old app had OIDN via Core ML; not ported yet)
