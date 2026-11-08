@@ -1,0 +1,100 @@
+import SwiftUI
+
+struct SettingsScreen: View {
+    @EnvironmentObject var app: AppModel
+    @AppStorage("pb.server") private var server = Prefs.defaultServer
+    @AppStorage("pb.apiKey") private var apiKey = ""
+    @AppStorage("pb.telemetry") private var telemetry = true
+    @State private var health: String?
+    @State private var exports: [StoredImage] = []
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Engine") {
+                    LabeledContent("Inference", value: "PixelBoost NN (Rust)")
+                    LabeledContent("Kernel", value: Core.engine.kernel())
+                    ForEach(app.models, id: \.id) { m in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(m.name)  ·  \(m.scale)×").font(.subheadline)
+                            Text(m.bestFor).font(.caption).foregroundStyle(Theme.dim)
+                        }
+                    }
+                }
+                Section {
+                    TextField("Server URL", text: $server).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    SecureField("API key (optional)", text: $apiKey)
+                    Toggle("Send anonymous diagnostics", isOn: $telemetry)
+                    Button("Test connection") { test() }
+                    if let health { Text(health).font(.caption).foregroundStyle(Theme.dim) }
+                } header: { Text("Server") } footer: {
+                    Text("Used for diagnostics and 24-hour cloud handoff. Upscaling never leaves the device.")
+                }
+                Section("Cloud handoff") {
+                    Button("Refresh") { refreshExports() }
+                    ForEach(exports, id: \.id) { e in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(e.label.isEmpty ? e.filename : e.label).font(.subheadline)
+                                Text("expires \(e.expiresAt)").font(.caption2).foregroundStyle(Theme.dim)
+                            }
+                            Spacer()
+                            Button { download(e) } label: { Image(systemName: "arrow.down.circle") }
+                        }
+                        .swipeActions {
+                            Button("Delete", role: .destructive) { try? Core.server.deleteExport(id: e.id); refreshExports() }
+                        }
+                    }
+                }
+                Section("About") {
+                    LabeledContent("Version", value: Core.appVersion)
+                    Text("Upscaling, fidelity refinement and every editing tool run in PixelBoost's own Rust engine. Models: Real-ESRGAN (BSD-3-Clause), converted to PixelBoost's .pbnn format.")
+                        .font(.caption).foregroundStyle(Theme.dim)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Theme.canvas)
+            .navigationTitle("Settings")
+            .onChange(of: server) { _, _ in Core.server.configure(baseUrl: server, apiKey: Prefs.apiKey) }
+            .onChange(of: apiKey) { _, _ in Core.server.configure(baseUrl: server, apiKey: Prefs.apiKey) }
+        }
+    }
+
+    private func test() {
+        health = "Checking…"
+        Task.detached {
+            let r = Result { try Core.server.health() }
+            await MainActor.run {
+                switch r {
+                case .success(let v): health = "Connected · server \(v)"
+                case .failure(let e): health = describe(e)
+                }
+            }
+        }
+    }
+
+    private func refreshExports() {
+        Task.detached {
+            let r = Result { try Core.server.listExports() }
+            await MainActor.run {
+                switch r {
+                case .success(let v): exports = v
+                case .failure(let e): app.message = describe(e)
+                }
+            }
+        }
+    }
+
+    private func download(_ e: StoredImage) {
+        Task.detached {
+            let dest = Core.newFile(URL(fileURLWithPath: e.filename).pathExtension.isEmpty ? "png" : URL(fileURLWithPath: e.filename).pathExtension)
+            let r = Result { try Core.server.downloadExport(id: e.id, destPath: dest.path) }
+            await MainActor.run {
+                switch r {
+                case .success: app.setPhoto(dest); app.tab = .upscale
+                case .failure(let err): app.message = describe(err)
+                }
+            }
+        }
+    }
+}

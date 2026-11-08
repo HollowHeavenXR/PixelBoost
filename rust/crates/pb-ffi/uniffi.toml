@@ -1,0 +1,4 @@
+[bindings.swift]
+module_name = "PixelBoostCore"
+ffi_module_name = "PixelBoostCoreFFI"
+ffi_module_filename = "PixelBoostCoreFFI"

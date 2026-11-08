@@ -1,683 +1,81 @@
-# PixelBoost
+# PixelBoost 5
 
-A small iOS app for upscaling and editing photos, fully on-device (Neural
-Engine/GPU via Core ML and Vision, no network call required) — started as
-a pure super-resolution app and is growing into a broader photo editor
-(background removal now, more editing tools planned). There's a separate,
-optional server (`server/`) for debug logging, temporary cloud backup, and
-custom presets — see "Logging & cloud features" below.
+An iOS photo upscaler and editor, rebuilt from the ground up in Rust.
 
-**Requires iOS 17** — Remove Background (Cutout) uses Vision's
-`VNGenerateForegroundInstanceMaskRequest`, which iOS 16 doesn't have.
+Everything that touches pixels — the AI upscaling, the neural-network
+inference itself, fidelity refinement, and every editing tool — is
+PixelBoost's own Rust code. There is no Core ML, ONNX Runtime, PyTorch or
+other ML runtime in the app. SwiftUI is only the screen layer on top of the
+Rust core (UniFFI), and the optional server is Rust too.
 
-Ships with six real converted super-resolution models (see
-[`Models/README.md`](Models/README.md)) — Real-ESRGAN's general-photo
-`x4plus`, anime/illustration-optimized `anime_6B`, low-artifact portrait
-`RealESRNet_x4plus`, and the fast/lightweight `realesr-general-x4v3` (all
-BSD-3-Clause), plus two models aimed at 3D/CG renders specifically rather
-than real photos: BSRGAN (Apache-2.0) — same RRDBNet family as the four
-above, trained on a much harsher synthetic degradation pipeline so it's
-more robust on a genuinely noisy/degraded render than a model trained
-assuming a clean real photo — and Real-CUGAN (MIT) — a different
-architecture entirely (a from-scratch U-Net, not RRDBNet), trained on
-anime/illustration art, for a toon/cel-shaded/NPR-style render's clean
-line structure — plus a plain Lanczos-resampling fallback
-(`LanczosUpscaler`) so the app still works if a model is ever
-missing/swapped out. An Auto mode runs every bundled model (now six) on
-the *full* photo and shows every result so you can compare and pick the
-one you like, rather than a heuristic quietly deciding for you — see
-"Compare Models" below. A seventh model (Apache-2.0, converted from Intel
-Open Image Denoise) backs the separate **Render Denoise** tab for cleaning
-up 3D-render noise — see "Render Denoise" below and
-[`Models/README.md`](Models/README.md).
+## Layout
 
----
-
-## Pixel-by-pixel engine & Darkroom redesign
-
-- **Every pixel goes through the model.** The old Detail setting shrank
-  photos over 4/8/16 MP before inference; that's gone. The source is
-  decoded once into raw BGRA memory in its own color space (Display P3
-  stays P3), each 128×128 model tile is copied straight out of it with
-  clamp-to-edge borders, the model runs directly via
-  `MLModel.predictions(from:)` in small batches (Vision is only a
-  fallback), and at native scale each tile's kept core is row-copied into
-  the canvas — the stitched image is bit-for-bit what the model produced.
-  Transparency is preserved (un-premultiplied in, alpha resampled back).
-  `Models/testbench/verify_pixel_engine.py` checks the tiling writes every
-  output pixel exactly once and matches an untiled reference.
-- **Fidelity (Detail Lock + Halo Guard)** — on soft or compressed sources
-  (3D renders, screenshots, re-saved JPEGs) GAN models repaint texture into
-  smooth patches and draw dark/bright outlines along edges. After the model,
-  the result is shrunk back to source size and compared with the original
-  pixel by pixel; the residual is scaled up and added back (two
-  back-projection passes, vImage Lanczos), then every output pixel is
-  clamped to its source 3×3 neighborhood's range ± a small tolerance.
-  Off / Natural (default) / Faithful. Each run reports its fidelity in dB
-  (source vs. result shrunk back). `Models/testbench/verify_fidelity.py`
-  simulates a smearing, haloing model: 36.9 dB raw → 47.4 Natural → 55.2
-  Faithful.
-- **Duplicate-tile skipping** — identical input tiles (flat backgrounds,
-  letterboxing, UI) reuse the earlier output instead of running the model;
-  inference is deterministic, so the pixels are identical.
-- **Noise-gated render denoise** — Auto/Batch only pre-denoise a render
-  with the render-denoise model when its measured noise (Immerkær
-  estimator) says it needs it; on clean renders that pass was erasing
-  texture before the model saw it.
-- **Patch Preview** — upscale a 160px patch you choose with every model
-  (Auto) or the current one, with fidelity scores, and pick the model
-  before committing to a full run.
-- **Power modes instead of Detail** — Efficiency (Neural Engine + CPU, no
-  GPU, utility QoS, paces itself when warm), Balanced, Performance. Low
-  Power Mode forces Efficiency. Thermal pacing backs off between batches.
-- **Live upscale view** — finished tiles of real output paint over the
-  dimmed original with the tile grid and active batch outlined; pause,
-  resume, cancel; tiles/megapixels/ETA. Runs keep going briefly in the
-  background, and a pill over the dock shows progress from any tab.
-- **Run plan before you tap** — exact output size, tile count, an ETA
-  learned from this device's previous runs, and an honest note when the
-  output had to be capped for memory (the input never is).
-- **Pixel Inspector** — real full-resolution before/after pixels under a
-  draggable crosshair at nearest-neighbor magnification, with hex colors.
-- **Undo/redo across every tool**, memory-budgeted.
-- **Paste from clipboard**, and every tool's empty state opens the photo
-  picker in place.
-- **New shell** — a floating dock (Upscale · Tools · Batch · History ·
-  Settings) and a searchable, categorized Tools library.
-- **Battery-minded UI** — flat surfaces instead of live blur materials,
-  almost no shadows, motion off in Low Power Mode/Reduce Motion, tabs
-  built on first visit, hidden tabs skip photo-change work until shown,
-  previews built from one cached 2048px copy, throttled progress updates.
-
-## Features
-
-- **Bottom tab bar** — every screen (Upscale plus all thirteen editing tools,
-  plus Batch/Cloud/History/Settings) is its own tab in a horizontally
-  scrollable bar along the bottom, instead of tools being buried behind a
-  menu or a top toolbar. There are eighteen tabs, more than the ~5 a native
-  iOS tab bar shows before collapsing the rest into an auto-generated
-  "More" list, so this is a custom bar rather than `TabView`. Every tab
-  stays mounted the whole time you have the app open, so switching away
-  and back never loses whatever you were in the middle of (a crop
-  selection, paint strokes, slider positions):
-  - **Cutout** — cuts the subject(s) out of a photo with a transparent
-    background, using Vision's on-device subject-lifting API
-    (`VNGenerateForegroundInstanceMaskRequest`, iOS 17+) — the same
-    technology behind Photos' own "Lift Subject." No custom model needed.
-    Three modes: **Everything** (the original behavior — cuts out every
-    detected subject at once), **Tap to Select** — Vision's request
-    already segments each subject separately under the hood (it's what
-    "Everything" merges together), so tapping a specific person/object in
-    the photo cuts out just that one, useful for a group photo or a table
-    of items where "Everything" would grab all of them at once — and
-    **Touch Up**, a brush for repairing what Vision got wrong: *Restore*
-    paints the original photo's pixels back over part of the subject the
-    matte wrongly cut away, *Erase* clears background it wrongly kept.
-    Before this, a bad matte had no recourse at all — re-running the same
-    request gives the same answer. It's a manual repair rather than a
-    better segmenter, so a precise outline around hair or foliage still
-    means patient work at a small brush size. Once the
-    result has transparency, a **Background** strip appears
-    right below it — seven curated fills (five solid/gradient swatches,
-    plus a blurred copy of the original photo, the common "fake bokeh"
-    trick) to place behind the cutout subject. Not a generative
-    "AI-replace the background with a new scene" model — see "Known
-    simplifications" below.
-  - **Enhance** — one-tap automatic exposure/color correction via Core
-    Image's built-in `autoAdjustmentFilters` (the same auto-analysis API
-    behind Snapseed's "Tune Image" auto button and Photoshop Express's
-    "Auto Enhance") — no manual sliders, no custom model.
-  - **Adjust** — brightness/contrast/saturation/exposure/vignette, plus a
-    5-point tone curve (drag a point up/down to reshape tones at that
-    brightness level — the input positions are fixed so points can't cross
-    over each other and fold the curve back on itself), all with a live
-    preview.
-  - **Selective** — the same brightness/contrast/saturation/exposure
-    adjustments as Adjust, but paint a region first and they apply only
-    there, blended back over the untouched original everywhere else.
-  - **Crop & Rotate** — 90° rotate, horizontal/vertical flip, plus
-    fixed-ratio crop (Free/1:1/4:5/5:4/16:9/9:16); drag the crop window to
-    reposition it. Flipping keeps a picked ratio and its window (a flip
-    doesn't change the image's dimensions, so the window just frames the
-    mirrored region); rotating drops back to Free, since the old window was
-    sized for the previous aspect ratio.
-  - **Filters** — thirteen one-tap looks (Vivid, Mono, Noir, Silvertone,
-    Chrome, Process, Transfer, Instant, Fade, Sepia, Warm, Cool, Matte)
-    built from Core Image's built-in photo-effect filters (plus a few
-    hand-tuned `CIColorMatrix`/`CIToneCurve` combinations for Warm/Cool/
-    Matte), picked from a strip of thumbnails rendered against your actual
-    photo, not generic swatches.
-  - **Overlays** — add text (and, via the system keyboard's own emoji
-    key, "stickers") on top of a photo; drag to reposition, tap to edit
-    color/size/font/outline/shadow or delete. Eight fonts (System,
-    Helvetica, Georgia, Courier, Typewriter, Script, Marker, Noteworthy),
-    all genuinely bundled with iOS — no custom font files.
-  - **Erase** (object removal) — paint over something to erase it; the
-    marked area is filled in with a diffusion-based fill that pulls
-    color inward from the surrounding pixels — not a generative model,
-    see "Known simplifications" below.
-  - **Restore** — a denoise slider (Core Image's built-in
-    `CINoiseReduction`) plus a "Restore Faces" toggle that sharpens detail
-    just around faces Vision detects (`VNDetectFaceLandmarksRequest`) — a
-    classical detail boost, not a trained restoration model (GFPGAN/
-    CodeFormer-class); see "Known simplifications" below.
-  - **Render Denoise** — a genuine trained model (converted from Intel Open
-    Image Denoise's `rt_ldr_small` filter, Apache-2.0 — the same one
-    Blender's Cycles Denoise node uses), for cleaning up noise from a 3D
-    render (Cycles, Eevee, any other path tracer) rather than a real
-    photo's sensor grain, which Restore's `CINoiseReduction` slider is
-    tuned for instead. The model has no adjustable parameter, so the
-    **Strength** slider mixes its result back over the original after
-    inference rather than changing how it runs — a way to back off a pass
-    that's too aggressive on a lightly-noisy render instead of taking it
-    all-or-nothing. Full strength is the default (the model's raw output);
-    a strength of 0 skips inference entirely.
-  - **Clone Stamp** — tap a source point, then paint elsewhere to copy
-    pixels from a fixed offset relative to that point (the offset is set
-    once, from the source point and the first spot you paint, then stays
-    constant for every stroke after that — the standard clone-stamp
-    gesture). Implemented as one whole-image shift (`CIAffineTransform`)
-    composited back over the original only within the painted area
-    (`CIBlendWithMask`), rather than sampling pixel-by-pixel along the
-    drag — same result, since the offset never changes mid-stroke anyway.
-    Tap "Change Source" to pick a new area at any time.
-  - **Pixel Art** — converts the photo into a blocky retro look: shrink to
-    a small grid (block size 3-32px), optionally crush the palette down to
-    2-16 posterized color steps per channel (`CIColorPosterize`), then
-    scale back up with nearest-neighbor interpolation so every block reads
-    as one hard-edged square instead of a blurry resize. A **Saturation**
-    slider (0.3-2.0x, applied before every color step below so they
-    quantize the boosted colors) punches up color intensity first, since
-    real pixel-art palettes typically read more vivid than an ordinary
-    photo. A **Color Depth** toggle picks 16-bit (RGB565 — 5 bits red, 6
-    green, 5 blue, the same layout 16-bit-era console/handheld hardware
-    rendered with, plus a 4x4 ordered/Bayer dither pattern — flat rounding
-    alone at 32-64 levels per channel turns out to barely band on an
-    ordinary photo; the dither texture is what actually reads as reduced
-    color depth) or 32-bit (full 8-bit-per-channel truecolor, the default —
-    a no-op quantization pass), applied after posterizing and independent
-    of the palette-levels slider above. A **Retro Palette** picker (Game
-    Boy's 4-shade green LCD, PICO-8's 16 colors, an NES-ish dozen, CGA's
-    black/cyan/magenta/white, an 8-step Grayscale, or **Auto from Photo** —
-    a 2-32 color palette extracted from the photo's own colors via a plain
-    k-means pass) snaps every pixel to the nearest color in that palette
-    instead — a stronger, more authentic result than posterize/Color
-    Depth's independent per-channel crush, since it takes over from both
-    when picked. A **Sprite Outline** toggle traces a thin black border
-    along every block boundary whose neighboring colors differ enough, the
-    hard-edged look classic pixel-art sprites use to separate shapes. A
-    **Transparent Background** toggle runs the same on-device subject
-    segmentation as the Cutout tab (Vision's
-    `VNGenerateForegroundInstanceMaskRequest`) to detect the actual subject
-    and clear everything else around it — a quick way to turn any photo
-    into a game-ready sprite without switching to a full Cutout pass
-    first. Falls back to chroma-keying out whichever color is most common
-    across the four corners (the old behavior) only if Vision can't find a
-    distinct subject to cut around. **Export as Sprite** switches the
-    output from a full-resolution photo with blocky squares to the actual
-    pixelated grid
-    itself, sized so its longer side is exactly 16/32/64/128px — a real
-    sprite-sheet-ready asset rather than a preview-scale "still photo
-    resolution" result (Block Size and the grid overlay don't apply to
-    this path, since there's no enlarging step for either). An optional
-    faint grid overlay (full-resolution output only) makes the block
-    boundaries explicit.
-  - **Scripted Filter** — write or paste a small Lua script defining
-    `apply(r, g, b, a)` (each 0...1 in, 4 numbers 0...1 out) and run it
-    over the photo one pixel at a time — a genuinely user-programmable
-    filter, not another fixed preset. Backed by a vendored, sandboxed Lua
-    5.4 interpreter (`Vendor/Lua`, MIT-licensed — see
-    `LuaFilterEngine.swift`): only `base` (with `load`/`dofile`/`loadfile`
-    stripped back out), `string`, `table`, `math`, and `utf8` are opened —
-    no filesystem, process, network, or bytecode-loading access — and a
-    per-run instruction-count hook aborts a script that's still running
-    past 5 seconds, so a `while true do end` typo can't hang the tool.
-    Runs at up to 900px on the longest side (capped — a full-resolution
-    photo would mean millions of individual Lua calls), same "known,
-    deliberate simplification" reasoning as the Filters/Adjust previews.
-    Named scripts save locally (`ScriptedFilterStore`, plain
-    `UserDefaults`, no server/iCloud round-trip) so they're there again
-    next launch; ships with three ready-to-run examples (Invert, Red
-    Channel Only, Threshold).
-
-  Each editing tab has an **Apply** button instead of a Done/Cancel —
-  applying bakes the edit onto the shared result and resets that tab back
-  to a blank slate (fresh sliders, empty overlay layer, cleared brush
-  strokes), but you stay right there; there's no dismiss step, you just
-  tap another tab whenever you want to move on. Cutout is the one
-  exception — it's a single unattended action, not something with
-  in-place controls, so it just runs and updates in place. All twelve
-  chain onto whichever result is currently showing (crop the upscaled
-  photo, filter a cutout, etc.) rather than always reaching back to the
-  original photo.
-- **Compare Models** — with Auto selected, Upscale runs the whole photo
-  through every bundled model and shows every result in a tappable,
-  full-screen-viewable grid; pick whichever looks best, or save them all.
-  Auto also automatically runs the matching classical/ML tool ahead of a
-  candidate that expects it — right now that means the 3D/CG Render
-  (BSRGAN) and Toon/Cel-Shaded Render (Real-CUGAN) candidates each get
-  Render Denoise applied first, since both models are tuned assuming
-  pre-cleaned input rather than a render's own raw noise. Batch's silent
-  auto-pick (the one place Auto genuinely picks a single model unattended,
-  rather than showing every result) gets the same treatment.
-- **2x/3x/4x output scale** — every model natively super-resolves at 4x
-  (that's fixed by the architecture), then the result is resized down to
-  your chosen final size — so 2x/3x still benefit from the model's full
-  detail instead of skipping analysis to hit a smaller ratio directly.
-- **Before/after comparison slider** — drag to reveal, right on the main
-  screen once a photo's upscaled.
-- **Denoise before upscale & sharpen after** (Settings) — an optional
-  `CINoiseReduction` pass on the source photo right before it's handed to
-  the model (helps avoid amplifying sensor noise into upscaled speckle on
-  grainy/low-light photos), and an optional `CISharpenLuminance` pass on
-  the finished result. Both off by default, both apply to single-photo and
-  Batch upscales alike.
-- **Revert to Original** — one tap on the main screen backs a chain of
-  edits (upscale, crop, filter, whatever) all the way out to the
-  untouched original photo you picked, without re-picking it.
-- **Text watermark** (Settings) — draw your own text over a chosen corner
-  (or center) of every saved photo, with an opacity slider. Applies to
-  every save path: single photo, Batch, and Compare Models' "Save All."
-- **Auto-Save After Upscale** (Settings) — skip the Save tap for a
-  single-photo upscale; saves itself the moment it finishes.
-- **Preserve Original** (Settings) — opts back out of the overwrite-in-
-  place default below, so every save always adds a new photo instead.
-- **Accent color** (Settings) — eight curated color themes beyond the
-  default blue, applied app-wide; see "Known simplifications" for why it
-  takes effect on next launch rather than live.
-- **Default landing tab** (Settings) — choose which tab PixelBoost opens
-  to instead of always starting on Upscale.
-- **Save overwrites the original by default** — saving a result (single
-  photo or batch) replaces the original photo you picked in place, rather
-  than adding a second, duplicate copy next to it. Uses `PHContentEditingOutput`
-  keyed off the `PhotosPickerItem`'s asset identifier, which needs full
-  Photos read/write access (not just add-only) — falls back to adding a
-  new asset instead if that's declined, the identifier's missing, or the
-  original can't be found (e.g. deleted since picking), so saving never
-  just fails outright. "Save All" on a Compare Models grid is the one
-  exception and always adds new assets, since there's no single result
-  there to overwrite the original with.
-- **Export format & quality** (Settings) — Auto (PNG if the result has
-  real transparency, JPEG otherwise), or force HEIC/JPEG/PNG, plus a
-  shared quality slider for whichever lossy format ends up being used.
-  Applies to every save — single photo, batch, and Compare Models' "Save
-  All."
-- **Model & quality picker** (Settings) — Auto, General Photo, Anime /
-  Illustration, Portrait, Fast & Clean, 3D / CG Render (BSRGAN — a
-  3D/Blender render rather than a real photo), and Toon / Cel-Shaded
-  Render (Real-CUGAN — a stylized/flat-shaded render or NPR toon-shader
-  output specifically, see [`Models/README.md`](Models/README.md)), plus
-  Fast (Lanczos, instant) / Standard / Best (Core ML, trading tile-seam
-  quality for speed via context overlap) / **Custom** (that same tile
-  overlap as a direct 1-32px slider, no server-backed preset needed).
-- **Upscale Strength** (Settings, 0-100%, default 100) — cross-dissolves
-  the model's result with a plain Lanczos resize of the original at the
-  same final size. The model still runs at full strength either way (so
-  History/timing reflect the real model) — this dials back an
-  over-aggressive or artifact-prone result's visible effect without
-  switching models entirely, down to 0% (plain resize, model result
-  discarded).
-- **Custom presets** — name your own model+overlap combination beyond the
-  built-in three; server-backed (needs a server configured).
-- **iCloud presets** — the same named model+overlap combinations, but
-  synced across your devices via `NSUbiquitousKeyValueStore` instead of the
-  server — no server or account needed, just being signed into iCloud.
-  Independent of Custom Presets above (separate storage, separate list);
-  see "Known simplifications" below.
-- **Batch upscale** — queue up to 20 photos, each saved to Photos as it
-  finishes.
-- **Cloud backup** — optionally back up a result to temporary (auto-
-  expiring) server storage; browse/restore/delete from the Cloud tab.
-  Uploads use the same format-aware encoding as a Photos save (JPEG for
-  an opaque result, PNG only when there's real alpha to preserve) rather
-  than always lossless PNG — a large 4x-upscaled photo used to routinely
-  exceed the server's upload cap for no reason (nothing to preserve
-  losslessly on an ordinary opaque photo); see `server/README.md`'s
-  "Uploads" section.
-- **History & stats** — every upscale attempt logged (technique, timing,
-  success/failure), with an aggregate stats header (total, success rate,
-  avg time, total megapixels produced) and swipe-to-delete/clear-all.
-- **Settings backup/restore** — save your model/quality/haptics settings
-  to the server and restore them later (per-device, no accounts).
-- Share sheet, copy to clipboard, full-screen pinch-to-zoom preview,
-  haptic feedback.
-- **Share-in extension** — share a photo from Photos, Safari, Files, or any
-  other app straight into PixelBoost via the system share sheet. A separate
-  process from the main app (`PixelBoostShare` target), so it can't jump
-  straight into the editor — it drops the image into a shared App Group
-  container and the main app picks it up the next time it's brought to the
-  foreground. Deliberately built on the system-provided
-  `SLComposeServiceViewController` compose sheet rather than a custom
-  screen; see "Known simplifications" below.
-
-All server-backed features work only when a server URL is configured (a
-working default is baked in, pointed at the live deployment above), and the
-app is fully functional with the URL field cleared. Uploading actual photo
-bytes (Cloud Backup's manual button, and the "Auto Cloud Backup" automation
-below) additionally needs its own opt-in even with a server configured —
-lightweight debug metadata (timings/dimensions/success, no image bytes) is
-the only thing that reaches the server without a separate toggle.
-- **Auto Cloud Backup** (Settings, off by default) — uploads every Upscale
-  result and every editing tool's Apply result to the server's temporary
-  scratch storage the instant it's produced, instead of relying on the
-  Cloud tab's manual backup button each time.
-
-## How it works
-
-- `ImageTiler` splits the source photo into fixed-size, overlapping tiles
-  sized to the model's input (128x128), so an arbitrarily large photo can
-  go through a model that only accepts small fixed-size input. Tiles
-  overlap so the model has context beyond the pixels it's actually
-  responsible for; only each tile's non-overlapping "core" output is kept
-  and stitched back together — the same pad-then-crop scheme Real-ESRGAN's
-  own `--tile` option uses.
-- `CoreMLTileUpscaler` runs each tile through the selected bundled model
-  via `VNCoreMLRequest`/`VNPixelBufferObservation`.
-- `LanczosUpscaler` is a same-protocol fallback using Core Image's Lanczos
-  resampling — no model required, just sharper than a plain bilinear
-  resize. Selected directly by the Fast quality preset.
-- `UpscalerProvider` resolves/caches the right `ImageUpscaling` strategy
-  for the current model+quality selection (shared across the single-image
-  and batch flows via one instance injected at the app level), and
-  `UpscaleRunner` runs one upscale + builds/posts its log entry — shared
-  logic both `UpscalerViewModel` (single image) and `BatchUpscaleViewModel`
-  (queue) call rather than each reimplementing it.
-
-## Logging & cloud features
-
-`server/` (`upscaler-bridge`, mirroring Lumisound's `ios-bridge` pattern) —
-**live**, deployed at `https://upscaler-bridge.xenusanimations.studio`. A
-FastAPI + PostgreSQL service backing everything server-side is optional in
-the app:
-
-- Debug logging (`upscale_history`) — every upscale attempt, for
-  debugging/stats. Each row carries `run_kind` ('single' | 'batch' |
-  'compare' | 'intent'), which matters more than it sounds: Auto mode and
-  Compare Models run *every* bundled model over the full photo, and each
-  candidate run used to land here indistinguishable from a deliberate
-  single upscale — so every per-model aggregate quietly mixed one requested
-  run in with a six-model sweep nobody asked for individually. Rows also
-  carry the fidelity PSNR, duplicate-tile reuse count and output-capped
-  flag the run already computed (and previously discarded at the log
-  boundary), and whether the render-denoise pre-pass actually *ran* rather
-  than merely being requested.
-- Per-model comparison telemetry (`model_comparisons` /
-  `model_comparison_candidates`) — one row per Compare Models sweep and one
-  per candidate within it, including which result **the user actually
-  picked**. That last column is the only non-proxy signal this app has
-  about model quality: the sharpness score is a heuristic standing in for
-  "looks better", and a human choosing one of six results they can all see
-  is the real answer. The app's own ranking winner is stored next to it, so
-  "does the metric agree with people?" is a single query.
-- `GET /log/overview` — fleet-wide health across every device (per-model
-  timing and failures, per-app-version rollup, top errors, model-pick
-  table, thermal distribution). Every other read endpoint is scoped to one
-  `device_id` with no way to enumerate them, so this is what makes any of
-  the above readable in aggregate rather than only for a device you already
-  know.
-- Temporary image storage (`image_imports`/`image_exports`) — auto-
-  expiring (default 24h, max 7 days) cloud backup for photos, with a real
-  cleanup loop actually deleting expired rows, not just a documented
-  intent.
-- Custom presets (`custom_presets`) and settings backup
-  (`device_settings`) — both per-device (no accounts).
-- Model registry (`model_registry`) — server-side metadata about
-  available models.
-
-Entirely optional: set a server URL in the app's Settings tab to turn any
-of this on, or leave it blank to keep the app fully offline. See
-[`server/README.md`](server/README.md) for the full endpoint list and how
-to run/deploy your own instance.
-
-## Building
-
-This project uses [XcodeGen](https://github.com/yonaskolb/XcodeGen) rather
-than committing an `.xcodeproj` directly:
-
-```bash
-brew install xcodegen   # once
-xcodegen generate
-open PixelBoost.xcodeproj
+```
+rust/
+  crates/pb-nn       inference library: padded channel-last feature maps,
+                     register-tiled 6x16 3x3-conv kernels (AVX2+FMA, NEON,
+                     portable), fused bias/activation/residual epilogues,
+                     PyTorch .pth reader (own zip + pickle VM), .pbnn model
+                     format (fp16), network blending (DNI), RRDBNet and
+                     SRVGGNetCompact
+  crates/pb-core     engine: image I/O, antialiased resampling, tiled model
+                     runner (every source pixel goes through the network,
+                     identical tiles run once), self-ensemble, fidelity
+                     (guided back-projection + smooth halo guard), halo-free
+                     detail boost, Auto model pick, metrics, editing tools
+  crates/pb-ffi      PixelBoostCore Swift module (UniFFI): upscale with live
+                     tile previews + cancel, editing ops, history store,
+                     server client
+  crates/pb-cli      `pixelboost` CLI: convert, upscale, raw, bench, eval, classify
+  crates/pb-server   upscaler-bridge server (axum + sqlx, see server/README.md)
+Models/pbnn/         the bundled networks (.pbnn)
+PixelBoost/          SwiftUI app shell (no image processing)
+scripts/build-core.sh  builds RustCore/PixelBoostCore.xcframework for iOS
 ```
 
-Then build & run on a **physical device**, not the simulator — all four
-bundled models are full Core ML models, and Neural Engine inference is
-dramatically faster than the simulator's CPU fallback.
+## The upscaler
 
-No extra setup for the Scripted Filter tool's Lua interpreter — it's
-vendored C source under `Vendor/Lua` (see `Vendor/Lua/README.md`), wired
-into the `PixelBoost` target's `sources:`/`HEADER_SEARCH_PATHS`/
-`SWIFT_OBJC_BRIDGING_HEADER` in `project.yml` already, so `xcodegen
-generate` picks it up like every other source file — no CocoaPods, no
-Swift Package resolution, no network access needed at build time.
+1. **Network** — one of six Real-ESRGAN-family networks (Auto picks drawn-art
+   vs photo/render from image statistics) runs over every pixel in tiles
+   with a 16px context margin, so seams see the same neighbourhood a
+   whole-image pass would.
+2. **Quality** — Standard (1 pass), High (2 mirrored passes averaged) or Max
+   (8 rotations/mirrors averaged).
+3. **Clarity / fidelity** — *Natural* keeps the network's crisp edges but
+   restores colour, shading and faint detail it flattened: the result is
+   shrunk back, compared with the source pixel by pixel, and the smooth part
+   of the difference is pushed back in through a guided (edge-respecting)
+   upsampler; a smoothly interpolated halo guard then clamps every output
+   pixel to its source neighbourhood's range, removing outlines and ringing.
+   *Faithful* corrects the full difference. *Raw AI* skips this.
+4. **Detail** — halo-free sharpening: luma is boosted against a Gaussian
+   base, gated by a noise floor, and limited to each pixel's own 3x3 range so
+   it never overshoots.
+5. Output size 2x / 3x / 4x / 8x (8x runs the network twice); alpha is
+   preserved.
 
-## Known simplifications (still a growing project, not a finished product)
+Measured on 26 gallery images (ground-truth crops shrunk 4x and restored,
+`pixelboost eval`): every model + Natural beats bicubic and Lanczos on PSNR,
+SSIM and edge similarity, and the fidelity stage adds ~+0.8–1.6 dB over the
+raw network output. See `RUST-REMAKE.md` for the numbers.
 
-- Interior tile-to-tile seams are a real, inherent limit of the
-  pad-then-crop tiling scheme (`ImageTiler`) — a CNN's receptive field
-  extends well past the `overlap` pixels of context each tile gets, so a
-  tile right at a seam sees slightly less context than the same region
-  would in a non-tiled pass. Measured as mild (real photos, general model,
-  8px overlap): output near a seam differs from a non-tiled reference run
-  by roughly 65% more than typical interior pixels — perceptible on close
-  inspection, not usually eye-catching at normal viewing size. A true
-  feathered/blended overlap (rather than pad-then-crop) would reduce this
-  further but is a bigger rewrite; not done here.
-- Edge tiles (the outermost `overlap` pixels of a photo's actual border,
-  not interior tile seams above) get edge-replicated context via
-  `UIImage.croppedEdgeReplicated(to:)`, not the plain transparent-padded
-  `cropped(to:)` every other tile crop still uses. This used to be
-  transparent padding — measured as a real, visible dark/smudged fringe
-  hugging every photo's edge (roughly 8x the pixel divergence from a
-  non-tiled reference in that border band vs. the interior on a real test
-  photo), not just a discarded margin like the doc comment here used to
-  claim. Edge replication cut that divergence by roughly 60% in the same
-  test; it's a flat stretched-pixel approximation, not true mirroring, so
-  some residual edge softness can remain.
-- No disk-based caching of intermediate tiles — very large photos (many
-  tiles) hold each tile's output in memory until the final stitch. A
-  Compare Models sweep's *finished* candidates are spilled to disk though
-  (`ComparisonResultStore`): keeping all N in memory cost ~86MB per
-  candidate, which real telemetry showed driving an 8-model sweep from
-  153MB to 754MB, through four memory warnings, into thermal throttling,
-  and into the output memory guard capping half of all compare runs. The
-  grid shows screen-sized previews and the picked candidate is read back at
-  full resolution. The tradeoff is a lossless PNG encode per candidate
-  (order of a second on a 20MP result) added to the sweep.
-- All four bundled models' conversions were checked in PyTorch (real photo in,
-  plausible sharper output, no NaNs) but the actual compiled `.mlpackage`
-  files have not been run in Xcode/the simulator directly — that requires
-  macOS, which wasn't available where they were converted. See
-  [`Models/README.md`](Models/README.md).
-- No iCloud sync yet — a deliberate later effort, not an oversight. (The
-  share extension and the batch Live Activity both exist now — see
-  `PixelBoostShare/` and `BatchLiveActivityController`.)
-- Remove Background relies entirely on Vision's own segmentation quality,
-  but a miss is no longer a dead end: the Cutout tab's third mode,
-  **Touch Up**, brushes the result by hand — Restore paints the original
-  photo's pixels back over a part of the subject the matte wrongly cut
-  away, Erase clears background it wrongly kept (see
-  `CutoutRefineService`). Same stroke/mask plumbing as Erase and Selective
-  Adjustments (`BrushMask`), composited with a slightly feathered mask so a
-  stroke doesn't read as an obvious paint-over against Vision's own soft
-  matte. It is still a manual repair, not a better segmenter: there's no
-  edge-aware snapping, so a precise outline around hair or foliage means
-  patient work at a small brush size. Like everything else in this app, it
-  hasn't been run on a physical device yet either. Tap to Select shares the same reliance (it's the same
-  underlying Vision request, just consumed per-instance) and picks
-  whichever detected instance's mask covers the tapped point first — if
-  two subjects' masks overlap at that exact pixel, whichever was detected
-  first wins, with no indication to the user that a second candidate was
-  even there.
-- Crop is fixed-ratio-window-plus-reposition only — no corner-drag resize
-  handles or free-angle straighten yet. Rotate is 90° increments only.
-  Horizontal/vertical flip are now wired to buttons in the Crop & Rotate
-  tab (`ImageTransform.flippedHorizontally/Vertically`, which already
-  existed); unlike rotate, a flip leaves the image's dimensions alone, so a
-  picked ratio and its crop window both stay valid and the window simply
-  frames the mirrored region.
-- Overlays are text-only, drag-to-reposition only — no pinch-resize or
-  rotate gesture, and no dedicated sticker-art library (emoji via the
-  system keyboard cover that role instead). Size/color/font/outline/shadow
-  are set from a sheet, not a live on-canvas transform. The outline
-  effect's on-canvas preview is an approximation (stacked offset copies,
-  since SwiftUI's `Text` has no real stroke modifier) — the actual saved
-  result uses a proper text-stroke attribute and looks a bit cleaner than
-  the live preview.
-- Object Removal ("Erase") is a classical diffusion fill (repeated,
-  growing-radius blur with the unmasked pixels held fixed), not a
-  generative inpainting model — there's no on-device Vision-framework
-  shortcut for this the way there was for background removal, and
-  blind-converting/shipping a generative model with no GPU and no
-  device/simulator to check its actual output on was judged too risky to
-  bet this feature on. It works well for small objects/blemishes over
-  fairly uniform backgrounds; larger or heavily textured regions will come
-  out smeared/blurred rather than reconstructed, since nothing here
-  invents new texture.
-- Face restoration ("Restore" tab) is a classical sharpen/detail boost
-  blended over Vision-detected face regions, not a trained generative
-  restoration model (GFPGAN/CodeFormer-class) — it can crisp up soft focus
-  a little but can't reconstruct detail that genuinely isn't there, and it
-  does nothing on a photo with no detectable face. Denoise is a single
-  `CINoiseReduction` pass with no per-region strength control.
-- Render Denoise's model conversion was sanity-checked in plain PyTorch
-  against a synthetic noisy test pattern (no real render/EXR available in
-  the conversion environment) rather than an actual Blender/Cycles output —
-  numerically a large, coherent noise reduction (not garbage/NaNs), but not
-  the same bar as "checked against a real render." It also had to use
-  coremltools' legacy `neuralnetwork` backend instead of the `mlprogram`
-  backend the other four models use (a missing native dependency in the
-  conversion environment, not a property of the model — see
-  `Models/convert/README.md`), producing a `.mlmodel` rather than a
-  `.mlpackage`; functionally equivalent once Xcode compiles it, but
-  untested end-to-end like everything else in this list. The underlying
-  model still has no adjustable parameter, so the tab's **Strength** slider
-  is a post-inference mix of the denoised result back over the original
-  (`RenderDenoiseService.denoise(_:strength:progress:)`) rather than a
-  model setting — enough to back off a pass that's too aggressive on a
-  lightly-noisy render, which used to be all-or-nothing. The model always
-  runs at full strength regardless, so this costs nothing in time; a
-  strength of 0 short-circuits and skips inference entirely.
-- Adding BSRGAN as a fifth Auto-mode candidate is a real behavior change
-  for every user, not just those upscaling 3D renders — Auto (and Compare
-  Models) now run one more model per photo (slower), and BSRGAN's
-  sharpness score could in principle win the comparison on an ordinary
-  real photo too, not just a render, since the auto-pick heuristic is
-  content-agnostic (a crop-sharpness test, not a render-vs-photo
-  classifier). Not necessarily wrong — BSRGAN is a genuinely capable
-  general upscaler, not a novelty model that only works on renders — but
-  worth knowing if Auto's pick or timing changes after this update. Same
-  "sanity-checked in PyTorch, not on the actual compiled `.mlmodel`, never
-  run in Xcode/on a device" caveat as every other model here, and it also
-  used the `neuralnetwork` conversion backend workaround (see Render
-  Denoise above) — noticeably larger than the other four models (~64MB vs
-  ~33MB) as a result, since that backend has no FP16 option.
-- Real-CUGAN, same Auto-mode-behavior-change caveat as BSRGAN just above
-  (now a sixth candidate, not a fifth) — plus its own conversion needed
-  two real changes from the original architecture, not just a copy: only
-  the original's `tile_mode==0` single-pass path was ported (the other
-  branches are the model's *own* internal whole-image tiling loop,
-  redundant with — and not traceable alongside — PixelBoost's own
-  `ImageTiler`), and several `F.pad(..., negative)` "crop via negative
-  padding" calls were rewritten as plain slicing, since coremltools'
-  `pad` op rejects negative values outright. Verified the rewrite changes
-  nothing (bit-identical output on a test tile, checked before ever
-  touching the Core ML conversion) — see `Models/convert/README.md` for
-  the full explanation — but it's a more invasive port than any other
-  model here, worth knowing if Toon / Cel-Shaded Render's output ever
-  looks wrong in a way the other models' outputs don't.
-- Background Replace (part of Cutout) is seven curated fills — solid
-  colors, two gradients, a blurred copy of the original photo — not a
-  generative model that invents a plausible new scene behind the subject.
-  The blurred-original option always blurs the very first photo you
-  picked, not whatever intermediate edit is currently showing, since
-  there's no tracked "pre-cutout" version once other edits have chained on
-  top.
-- Clone Stamp composites a whole-image shift over the painted mask in one
-  pass rather than sampling continuously along the drag, and there's no
-  live second cursor tracking the source offset as you paint (only the
-  fixed source-point marker) — both are safe simplifications since the
-  offset is genuinely constant for the whole gesture, same as a real
-  clone-stamp tool, just without the extra live-preview chrome.
-- All eighteen tabs stay mounted simultaneously for the app's whole lifetime
-  (so switching tabs never loses in-progress work) rather than being
-  created/destroyed on demand — a small, deliberate memory-vs-simplicity
-  tradeoff that hasn't been profiled on a real device, since none is
-  available where this was built.
-- The Share Extension is the riskiest piece shipped so far to have never
-  run on a device or simulator: an extension's host-app lifecycle,
-  App Group container access, and `SLComposeServiceViewController`'s
-  compose-sheet behavior are all things Xcode can compile but can't be
-  exercised without actually installing the app and triggering a real
-  share sheet. It's also unsigned (this repo has no code-signing secrets
-  configured — see "Building" below), and a sideloading tool re-signing
-  the IPA with a different team/App Group entitlement than
-  `group.com.pixelboost.shared` would silently break the hand-off (the
-  extension would still "succeed" from the sharing app's point of view,
-  but the photo would never reach the main app) — flag this as unverified
-  if anyone hits it.
-- iCloud Presets stores the entire preset list as one JSON blob under a
-  single `NSUbiquitousKeyValueStore` key rather than merging per-preset —
-  if two devices both save a change at nearly the same moment, whichever
-  one's sync lands last simply overwrites the other's list wholesale. Same
-  no-device caveat as the Share Extension: there's no second iCloud-signed
-  device available here to actually watch a cross-device sync happen, so
-  the multi-device behavior is unverified, only the local read/write path
-  has been checked by reading through Apple's documented `KVS` semantics.
-- Accent color takes effect on next launch, not live. Every tab is created
-  once and stays mounted for the app's whole session (see above) — making
-  a color change apply instantly everywhere would mean forcing the whole
-  view tree to recreate, which would also wipe every tab's in-progress
-  state. Settings still shows which color is selected immediately; only
-  the actual app-wide re-tint is delayed to the next cold launch.
-- Warm/Cool/Matte (Filters) and the new Vignette slider (Adjust) are all
-  fixed, one-directional `CIColorMatrix`/`CIVignette`/`CIToneCurve`
-  combinations, hand-picked the same way Vivid/Sepia were — not verified
-  against real output on a device, same caveat as everything else in this
-  app's image pipeline.
-- Denoise Before Upscale runs at one fixed strength (not a slider) when
-  toggled on — same one-axis-at-a-time reasoning as the rest of Restore's
-  denoise control.
-- Scripted Filter is capped to 900px on the longest side and a 5-second
-  per-run instruction budget (see the Features entry above) — a genuine
-  ceiling, not just a preview convenience like Filters/Adjust's downscaled
-  previews, since the tool calls into the script once per pixel with no
-  way to know ahead of time how expensive a given script's `apply` body
-  is. A script that's actually fine but slow (heavy `string`/`table` work
-  per pixel) can still hit the time limit and get reported as a runtime
-  error rather than just running a little longer.
-- `CoreMLTileUpscaler` used to hold every tile's upscaled output in an
-  array until the very end, then stitch them into a final canvas — for a
-  large photo (many dozens of tiles) that meant two full copies of
-  roughly the same data alive at once, right at the point memory pressure
-  was already highest. It now draws each tile into one shared `CGContext`
-  as soon as that tile finishes, discarding the tile's own memory
-  immediately after. There was also a real double-resume crash in the
-  per-tile Vision request: `VNImageRequestHandler.perform(_:)` can throw
-  the same error it already delivered to a request's completion handler,
-  which used to resume the same `CheckedContinuation` twice — a fatal
-  "SWIFT TASK CONTINUATION MISUSE" crash, and the likely actual cause
-  behind "some photos crash the app while upscaling" (more likely to
-  surface the longer/larger a photo's tile run is, since it only fires
-  when some individual tile's inference fails). Both fixed; see the doc
-  comments in `CoreMLTileUpscaler.swift`. Still not exercised on a real
-  device, same caveat as the rest of this app's image pipeline.
-- Investigated a report of upscaled results looking jagged/blurred/smudged,
-  especially around edges. Reproduced the underlying models (real
-  Real-ESRGAN weights, plain PyTorch — no Core ML runtime is available
-  outside macOS/iOS, so this is the closest verification possible here)
-  against real photos from the reporting user's own Photos export, tiled
-  the exact way `ImageTiler`/`CoreMLTileUpscaler` do, and compared against
-  a non-tiled reference pass of the same model. Found and fixed the outer-
-  edge padding bug described above (a real, measured ~8x error spike right
-  at every photo's border, cut by ~60% by the fix) — textually the closest
-  match to "edges... all around" in the report. Also confirmed, but did
-  *not* change: mild inherent interior tile-seam softness (see above), and
-  that Real-ESRGAN-family models genuinely do produce blotchy/melted-
-  looking texture on fine repetitive detail (sequins, glitter, some fabric
-  weaves) — a known characteristic of this model family's GAN training,
-  not specific to this app's conversion or integration. `compute_precision
-  =ct.precision.FLOAT16` in `convert.py` (see there) remains an untested
-  variable — Core ML FP16 vs FP32 differences can't be checked without
-  actually running the compiled `.mlpackage` on-device, which (as
-  everywhere else in this README) hasn't happened yet.
+## Editing tools (all Rust, via one JSON op dispatcher — `pb_core::ops`)
+
+Auto enhance, Adjust (exposure, brightness, contrast, saturation, warmth,
+highlights, shadows, vignette, 5-point monotone curve), 13 Looks, `.cube`
+LUTs, Selective (brush-masked adjustments), Restore (edge-preserving
+denoise, halo-free sharpen), Heal (pyramid inpainting), Clone stamp, Crop /
+rotate / flip / straighten, Cutout (subject mask from Vision, compositing +
+touch-up + backgrounds in Rust), Pixel Art (k-means palette, ordered
+dither, outline), Seamless texture, Normal map, AO multiply, Depth fog.
+
+## Build
+
+```
+cd rust && cargo build --release && cargo test --release
+./target/release/pixelboost upscale in.jpg out.png --model auto
+```
+
+The iOS app is built in GitHub Actions: `scripts/build-core.sh` (Rust ->
+xcframework, also runs the tests on Apple Silicon) then XcodeGen + xcodebuild.
+Push to `main` builds an unsigned IPA; a `v*` tag publishes a release.

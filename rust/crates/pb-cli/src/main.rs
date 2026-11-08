@@ -1,0 +1,127 @@
+//! `pixelboost` — command line front end for the engine and the test bench.
+
+mod eval;
+
+use pb_core::{models, Engine, Image, TileOptions};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+fn usage() -> ! {
+    eprintln!(
+        "pixelboost <command>
+  convert <in.pth> <out.pbnn>          convert a PyTorch checkpoint
+  convert-all <pth dir> <models dir>   convert every bundled model's checkpoint
+  models                               list bundled models
+  upscale <in> <out> [--model id] [--scale s] [--fidelity off|natural|faithful]
+          [--detail 0..1] [--denoise 0..1] [--tile n] [--models dir]
+  raw <model> <in> <out>               model output only, no post-processing
+  bench <model> [size]                 time one forward pass
+  eval <image dir> <out dir> [--models dir] [--crop n] [--list a,b] [--only ids]
+                                       degrade -> upscale -> compare with original"
+    );
+    std::process::exit(2)
+}
+
+pub fn models_dir(args: &[String]) -> PathBuf {
+    flag(args, "--models").map(PathBuf::from).unwrap_or_else(|| {
+        let exe = std::env::current_exe().unwrap_or_default();
+        for c in [PathBuf::from("models"), PathBuf::from("../models"), exe.parent().unwrap_or(Path::new(".")).join("../../models")] {
+            if c.join("anime-x4.pbnn").exists() {
+                return c;
+            }
+        }
+        PathBuf::from("models")
+    })
+}
+
+pub fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(|s| s.as_str())
+}
+
+fn convert(src: &Path, dst: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
+    let sd = pb_nn::pth::load_pth(&bytes).map_err(|e| e.to_string())?;
+    let (arch, cfg) = pb_nn::arch::detect(&sd)?;
+    let params: usize = sd.iter().map(|(_, t)| t.data.len()).sum();
+    let meta = serde_json::json!({
+        "source": src.file_name().unwrap().to_string_lossy(),
+        "params": params,
+        "license": "BSD-3-Clause (Real-ESRGAN, Xintao Wang et al.)",
+    });
+    let out = pb_nn::pbm::write(&arch, cfg.clone(), meta, &sd);
+    // Round-trip check: the converted file must build.
+    let w = pb_nn::pbm::read(&out)?;
+    pb_nn::build(&w)?;
+    std::fs::write(dst, &out).map_err(|e| e.to_string())?;
+    println!("{} -> {} ({arch} {cfg}, {params} params, {:.1} MB)", src.display(), dst.display(), out.len() as f64 / 1e6);
+    Ok(())
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        usage();
+    }
+    let res = match args[0].as_str() {
+        "convert" if args.len() >= 3 => convert(Path::new(&args[1]), Path::new(&args[2])),
+        "convert-all" if args.len() >= 3 => {
+            let (src, dst) = (Path::new(&args[1]), Path::new(&args[2]));
+            std::fs::create_dir_all(dst).ok();
+            models::MODELS.iter().try_for_each(|m| convert(&src.join(m.source), &dst.join(m.file)))
+        }
+        "models" => {
+            for m in models::MODELS {
+                println!("{:<13} x{}  cost {:>5.2}  {:<28} {}", m.id, m.scale, m.cost, m.name, m.best_for);
+            }
+            Ok(())
+        }
+        "raw" if args.len() >= 4 => (|| {
+            let dir = models_dir(&args);
+            let eng = Engine::load(&dir, &args[1], flag(&args, "--denoise").and_then(|v| v.parse().ok()))?;
+            let img = Image::open(&args[2])?;
+            let t = Instant::now();
+            let tile = flag(&args, "--tile").and_then(|v| v.parse().ok()).unwrap_or(128);
+            let out = eng
+                .run(&img, TileOptions { tile, pad: 16 }, &mut |e| {
+                    eprint!("\r  tile {}/{}", e.done, e.total);
+                    true
+                })
+                .unwrap();
+            eprintln!();
+            println!("{}x{} -> {}x{} in {:.2}s", img.w, img.h, out.w, out.h, t.elapsed().as_secs_f64());
+            out.save(&args[3])
+        })(),
+        "upscale" if args.len() >= 3 => eval::upscale_cmd(&args),
+        "bench" if args.len() >= 2 => (|| {
+            let dir = models_dir(&args);
+            let eng = Engine::load(&dir, &args[1], None)?;
+            let n: usize = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(64);
+            let mut img = Image::new(n, n);
+            for (i, p) in img.px.iter_mut().enumerate() {
+                let (x, y) = ((i % n) as f32, (i / n) as f32);
+                *p = [(x * 0.1).sin() * 0.5 + 0.5, (y * 0.07).cos() * 0.5 + 0.5, ((x + y) * 0.05).sin() * 0.5 + 0.5, 1.0];
+            }
+            println!("kernel: {}", pb_nn::conv::kernel_name());
+            for _ in 0..2 {
+                let t = Instant::now();
+                eng.run(&img, TileOptions { tile: n, pad: 0 }, &mut |_| true);
+                let dt = t.elapsed().as_secs_f64();
+                let gflop = eng.macs_per_px() * (n * n) as f64 * 2.0 / 1e9;
+                println!("{}: {n}x{n} in {dt:.3}s  ({gflop:.1} GFLOP, {:.1} GFLOP/s)", args[1], gflop / dt);
+            }
+            Ok(())
+        })(),
+        "eval" if args.len() >= 3 => eval::eval_cmd(&args),
+        "classify" if args.len() >= 2 => args[1..].iter().try_for_each(|f| {
+            let img = Image::open(f)?;
+            let s = pb_core::classify::stats(&img);
+            println!("{f}: {} {:?}", pb_core::classify::pick_model(&img), s);
+            Ok(())
+        }),
+        _ => usage(),
+    };
+    if let Err(e) = res {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}

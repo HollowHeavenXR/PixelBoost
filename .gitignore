@@ -30,3 +30,6 @@ result
 
 # local pre-migration copies
 *.pre-migration
+
+# Rust engine build output (scripts/build-core.sh)
+RustCore/

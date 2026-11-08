@@ -1,205 +1,29 @@
 # Models
 
-Eight Core ML models are bundled, picked automatically via `UpscalerProvider`
-(Auto mode) or manually in the model picker — all
-[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)-family conversions,
-BSD-3-Clause. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the
-license text and [`convert/`](convert/) for the conversion pipeline (one
-script, two supported architectures).
+`pbnn/` holds the networks the app ships, in PixelBoost's own `.pbnn`
+format (JSON header + fp16 tensors, see `rust/crates/pb-nn/src/pbm.rs`).
+They run on PixelBoost's own inference engine (`rust/crates/pb-nn`):
+hand-written AVX2/NEON 3x3 convolution kernels, no Core ML / ONNX / PyTorch.
 
-| File | Source | Architecture | Best for |
+| File | Id | Architecture | Best for |
 |---|---|---|---|
-| `RealESRGAN.mlpackage` | `RealESRGAN_x4plus.pth` | RRDBNet, 23 blocks | General photos (default) |
-| `RealESRGANAnime.mlpackage` | `RealESRGAN_x4plus_anime_6B.pth` | RRDBNet, 6 blocks (smaller/faster) | Anime/illustration art |
-| `RealESRNet.mlpackage` | `RealESRNet_x4plus.pth` | RRDBNet, 23 blocks | Portraits — same architecture/data as x4plus but trained with only L1 loss (no GAN), so it's smoother and less prone to over-sharpened/ringing artifacts on skin |
-| `RealESRGeneralV3.mlpackage` | `realesr-general-x4v3.pth` | SRVGGNetCompact, 32 conv layers | Everyday quick default — much smaller/faster than any RRDBNet model, cleaner result on typical real-world photos |
+| `anime-x4.pbnn` | anime | RRDBNet, 6 blocks | Drawn art, anime, cel shading |
+| `photo-x4.pbnn` | photo | RRDBNet, 23 blocks | Photos, game screenshots, 3D renders |
+| `clean-x4.pbnn` | clean | RRDBNet, 23 blocks (no GAN loss) | Faces, anything where invented texture looks wrong |
+| `fast-x4.pbnn` (+ `fast-denoise-x4.pbnn`) | fast | SRVGGNetCompact, 32 convs | Quick everyday upscale; the two are blended for the denoise slider |
+| `native-x2.pbnn` | native2x | RRDBNet, 23 blocks, pixel-unshuffle input | 2x of photos |
+| `lineart-x4.pbnn` | lineart | SRVGGNetCompact, 16 convs | Anime video frames, line art |
 
-Two more super-resolution models target different source-image classes —
-3D/CG renders rather than real photos:
+Reproduce from the official checkpoints (BSD-3-Clause, see
+`THIRD_PARTY_NOTICES.md`):
 
-| File | Source | Architecture | Best for |
-|---|---|---|---|
-| `BSRGAN.mlmodel` | `BSRGAN.pth` | RRDBNet, 23 blocks (BSRGAN's own layer naming — see `convert/bsrgan_arch.py`) | 3D/Blender renders (Cycles/Eevee/any path tracer), especially a low-sample-count or lossily-compressed one — trained on a much broader/harsher synthetic degradation pipeline than the other four models, so more robust on genuinely degraded source than a model trained assuming clean bicubic-downsampled input |
-| `RealCUGAN.mlmodel` | `up4x-latest-no-denoise.pth` | From-scratch U-Net (not RRDBNet — see `convert/realcugan_arch.py`) | A toon/cel-shaded/NPR-style 3D render, or any flat-shaded stylized scene — trained specifically on anime/illustration art, so it holds clean line structure with noticeably less over-smoothing than a photo-oriented model on that kind of flat-color content |
-
-Selectable as "3D / CG Render" (`UpscaleModelChoice.render3D`, BSRGAN) and
-"Toon / Cel-Shaded Render" (`UpscaleModelChoice.stylizedRender`,
-Real-CUGAN) in the model picker, and both included in `Auto`'s
-every-model comparison like the other four — BSRGAN is Apache-2.0,
-Real-CUGAN is MIT, see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-BSRGAN reuses `convert.py` via `--arch bsrgan`; Real-CUGAN needed its own
-architecture reimplementation (`convert/realcugan_arch.py`) since it isn't
-an RRDBNet model at all — its original `forward()` also does its own
-internal whole-image tiling for arbitrary input sizes, which doesn't
-trace/convert to Core ML cleanly, so the port keeps only the original's
-`tile_mode==0` single-pass branch (the one that actually applies to a
-fixed-size tile — PixelBoost's own `ImageTiler` already handles the
-external tiling) and replaces a few `F.pad(..., negative)` "crop via
-negative padding" calls with plain tensor slicing, since coremltools'
-`pad` op rejects negative values outright. Both models, like
-`OIDNRenderDenoise.mlmodel`, hit this conversion environment's missing
-`libmilstoragepython`, so both are `.mlmodel` (legacy `neuralnetwork`
-backend) rather than `.mlpackage` — see that model's own note below and
-`Models/convert/README.md` for the full explanation. BSRGAN is noticeably
-larger than the other RRDBNet models (~64MB vs ~33MB) since that backend
-embeds weights as FP32 with no FP16 option; Real-CUGAN is small regardless
-(~5.6MB, a much smaller network to begin with). Both sanity-checked the
-same way as the rest (a real crop through the un-converted PyTorch model —
-for Real-CUGAN, confirmed the negative-pad→slicing rewrite produces
-bit-identical output to the original before converting — correct 4x
-output shape, no NaNs, plausible value range) — like every model here,
-**the actual compiled `.mlmodel` has not been run in Xcode/on-device**.
-
-Two more were added 2026-09-22, alongside the Detail setting that lets the
-model actually see a photo's real resolution again (see
-`CoreMLTileUpscaler`):
-
-| File | Source | Architecture | Best for |
-|---|---|---|---|
-| `RealESRGANx2.mlpackage` | `RealESRGAN_x2plus.pth` | RRDBNet, 23 blocks, **native 2x** | A 2x upscale. Every other bundled model is architecturally 4x, so a 2x request makes them analyze at 4x and resample down; this one produces the requested ratio directly, covering 4x the source area per tile for the same model-input budget. At 4x its output has to be stretched instead — the same trade in reverse, which is why it's a separate pick rather than the default |
-| `RealESRGANAnimeVideo.mlpackage` | `realesr-animevideov3.pth` | SRVGGNetCompact, 16 convs | Anime video frames and flat line art — trained on that source's compression artifacts specifically, and far lighter than the RRDBNet anime model (1.3MB vs ~9MB), which matters more now that Detail can feed a model 4-16x as many pixels |
-
-Both are BSD-3-Clause from the same official Real-ESRGAN releases as the
-original four. Selectable as "Native 2×" (`UpscaleModelChoice.sharp2x`)
-and "Anime Video / Line Art" (`.animeVideo`).
-
-`x2plus` needed the `pixel_unshuffle` path restored in `convert/rrdbnet.py`
-— a scale=2 RRDBNet packs each 2x2 block of input pixels into the channel
-dimension (3 -> 12 channels) before the body runs, so its `conv_first`
-expects 12 input channels and the checkpoint simply won't load without it.
-That path was originally stripped as dead code for x4plus. It's
-`F.pixel_unshuffle`, not basicsr's hand-rolled view/permute/reshape: the
-hand-rolled version builds its target shape from `x.size()`, which traces
-as tensor-derived constants and makes coremltools fail with "only
-0-dimensional arrays can be converted to Python scalars". The two were
-asserted numerically identical before the swap. `convert.py` takes
-`--scale {1,2,4}` for this.
-
-Sanity-checked the same way as every other model here — the un-converted
-PyTorch model, run on a synthetic photo-like image (smooth base plus hard
-edges) downscaled and fed back in: correct output shape, no NaNs,
-structurally correct output (0.97 / 0.94 correlation with the ground
-truth) carrying visibly more edge energy than bicubic. PSNR lands *below*
-bicubic on that test, which is expected rather than alarming for GAN-
-trained models on clean synthetic input: they hallucinate plausible
-detail rather than minimizing per-pixel error, and they're trained on
-real-world degradations, not clean bicubic downsampling. As with every
-model here, **the compiled Core ML model has not been run in Xcode or
-on-device** — that needs macOS.
-
-`Auto` (see `UpscalerProvider.autoSelectModel`) tests every bundled model
-above against a crop of the photo and keeps whichever scores sharper,
-rather than picking one of these by fixed default.
-
-A seventh model, `OIDNRenderDenoise.mlmodel`, backs the separate **Render
-Denoise** tab (not part of Upscale/Auto above — it denoises in place, it
-doesn't super-resolve):
-
-| File | Source | Architecture | Best for |
-|---|---|---|---|
-| `OIDNRenderDenoise.mlmodel` | `rt_ldr_small.tza` (Intel Open Image Denoise) | Small U-Net (4 pool/upsample stages, 32ch encoder) | Cleaning up noise from a 3D/Blender render (Cycles, Eevee, any path tracer) — a different noise character than a photo's sensor grain, which is what Restore's `CINoiseReduction` slider targets instead |
-
-Converted with [`convert_oidn.py`](convert/convert_oidn.py) from
-`rt_ldr_small.tza` (Apache-2.0, [RenderKit/oidn-weights](https://github.com/RenderKit/oidn-weights))
-— the same beauty-only (no albedo/normal AOVs), fast/"small" filter variant
-Blender's Cycles Denoise node itself uses, reimplemented in PyTorch
-(`oidn_unet.py`) since Intel only ships pretrained weights in their own
-`.tza` binary format, not as a PyTorch/ONNX checkpoint — see
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the license and
-attribution and "Swapping in a different model" below for **the one
-real difference from the other four**: this conversion had to use
-coremltools' legacy `neuralnetwork` backend (producing a flat `.mlmodel`,
-not an `.mlpackage`) rather than the modern `mlprogram`/ML Program backend
-the other four use, because the machine this was converted on lacked the
-compiled `libmilstoragepython` native extension `mlprogram` needs to
-externalize weights into a `.mlpackage`'s separate weight blob — a Linux/
-Python-3.14 environment limitation, not a property of the model itself.
-Functionally equivalent (Xcode compiles either into the same `.mlmodelc`),
-just worth knowing if a future re-convert on a machine with a full
-coremltools install ever swaps it back to `.mlpackage`.
-Sanity-checked the same way as the other four: ran the un-converted PyTorch
-model (weights loaded straight from the `.tza`) against a synthetic noisy
-test image (no real render/EXR available in the conversion environment) —
-mean-squared error against the clean reference dropped ~7.6x and
-high-frequency noise energy dropped ~25x after denoising, no NaNs. Like
-every other model here, **the actual compiled `.mlmodel` has not been run
-in Xcode/on-device** — that requires macOS, unavailable where this was
-converted.
-
-**Not verified end-to-end.** All four conversions (`torch.jit.trace` →
-`coremltools.convert`) produce a `.mlpackage` with the right input/output
-shapes, and the underlying PyTorch model + weights were checked separately
-for each (ran the un-converted model on a real crop, got a plausible
-sharper/higher-res result, no NaNs) — but none of the compiled Core ML
-models have been run on-device or in Xcode's simulator by this change,
-since that requires macOS.
-
-**Corruption investigation — two separate bugs found, chased down to
-compositing code:**
-
-1. The in-app compare/zoom preview handing a full-resolution result (a 4x
-   upscale of a modern phone photo easily clears 50MP) straight to a live
-   SwiftUI `Image` tears into repeating horizontal bands on real hardware
-   — a display-only artifact, fixed by `UIImage.downsampledForDisplay` in
-   `PixelBoost/Sources/Services/UIImage+Display.swift`. Real, but **not
-   the whole story**: a saved/exported file (watermark already baked in
-   by `Watermark.apply`, so genuinely post-pipeline output, not a
-   preview) sent from a real iPhone 13 showed the same torn-band
-   corruption — the actual pixel data written to Photos was corrupted
-   too, independent of #1.
-2. For #1's leftover corruption: tried excluding the Neural Engine
-   (`.cpuAndGPU`, v3.22.1), then excluding GPU too (`.cpuOnly`, v3.22.3),
-   on the theory this was a compute-backend miscompilation. A real-device
-   A/B of the same photo on both builds produced **pixel-identical**
-   corrupted output — proof the bug is fully deterministic and has
-   nothing to do with which backend runs the model. That pointed at
-   `CoreMLTileUpscaler`'s own tile-stitching code, specifically the
-   version (introduced alongside the Pixel Art/Lua tools, never verified
-   on hardware) that drew each tile directly into one shared `CGContext`
-   with a hand-rolled `translateBy`/`scaleBy` coordinate flip instead of
-   the original `UIGraphicsImageRenderer`-based stitch. Reverted back to
-   the `UIGraphicsImageRenderer` approach — it was correct before that
-   rewrite and never itself implicated by any report. Needs on-device
-   confirmation; if corruption somehow persists even after this, the
-   conversion pipeline (`convert/`) is the next thing to check, not
-   anything runtime/compositing-related, since both are now ruled out.
-
-**Performance:** the general model (23 RRDB blocks) is the highest-quality
-but heaviest config — test on a physical device, not the simulator. The
-anime model (6 blocks) is noticeably smaller (~9MB vs ~33MB). RealESRNet is
-the same size/shape as the general model (same architecture) but should
-look different, not faster. RealESRGeneralV3 is the smallest and fastest of
-the four (~2.5MB) — SRVGGNetCompact has no residual dense blocks at all.
-Neural Engine inference should be reasonably fast either way; CPU-only
-fallback will be slow per 128x128 tile, multiplied by however many tiles a
-full photo needs.
-
-## Swapping in a different model
-
-Change `UpscaleModelChoice` in `UpscalerProvider.swift` to match (add a
-case, or repoint an existing one's `modelName`). Two ways to get another
-model:
-
-1. **Find one already converted** — search for "coreml" alongside the
-   model name; check its license before shipping it.
-2. **Convert one yourself** — see [`convert/`](convert/); `convert.py`
-   takes `--arch {rrdbnet,srvgg}` plus `--weights`/`--num-block` (rrdbnet)
-   or `--num-conv` (srvgg) /`--out`/`--description`, so it covers any
-   RRDBNet- or SRVGGNetCompact-architecture Real-ESRGAN checkpoint without
-   modification. For a genuinely different architecture, adapt it: trace
-   the PyTorch model at a fixed input size with `torch.jit.trace`, then
-   `coremltools.convert(..., inputs=[ct.ImageType(...)],
-   outputs=[ct.ImageType(...)])` so the compiled model takes/returns
-   `CVPixelBuffer`s directly — that's what lets `CoreMLTileUpscaler` use
-   `VNCoreMLRequest`/`VNPixelBufferObservation` without manual pixel-format
-   handling. Bake any output denormalization (e.g. clamp + scale back to
-   0-255) into the traced graph itself, since output `ImageType` doesn't
-   apply scale/bias the way input `ImageType` does.
-
-## Matching `CoreMLTileUpscaler.Config`
-
-| Config field | Must equal |
-|---|---|
-| `tileSize` | The model's fixed input width/height, in pixels (128 for all four bundled models) |
-| `scaleFactor` | The model's output size ÷ input size (4 for all four bundled models) |
-| `overlap` | Your choice — context pixels fed to the model beyond what's kept; 8-16 is reasonable for a 128px tile (see `UpscaleQuality`'s Standard/Best presets) |
+```
+cd rust
+mkdir -p weights-src && cd weights-src
+B=https://github.com/xinntao/Real-ESRGAN/releases/download
+for u in v0.1.0/RealESRGAN_x4plus.pth v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth \
+         v0.1.1/RealESRNet_x4plus.pth v0.2.5.0/realesr-general-x4v3.pth \
+         v0.2.5.0/realesr-general-wdn-x4v3.pth v0.2.1/RealESRGAN_x2plus.pth \
+         v0.2.5.0/realesr-animevideov3.pth; do curl -sLO $B/$u; done
+cd .. && cargo run --release -p pb-cli -- convert-all weights-src ../Models/pbnn
+```

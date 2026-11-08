@@ -1,0 +1,13 @@
+[package]
+name = "pb-core"
+description = "PixelBoost engine: AI upscaling pipeline, fidelity refinement, image editing operations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pb-nn = { path = "../pb-nn" }
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "exr", "tiff", "bmp", "gif"] }

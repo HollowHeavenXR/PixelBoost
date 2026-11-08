@@ -45,6 +45,21 @@ jobs:
           echo "Selected Xcode: $XCODE"
           xcodebuild -version
 
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: cargo-ios-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: cargo-ios-
+
+      - name: Build Rust engine (PixelBoostCore.xcframework)
+        run: |
+          rustup default stable
+          scripts/build-core.sh
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

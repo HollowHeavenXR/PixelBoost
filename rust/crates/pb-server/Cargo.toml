@@ -1,0 +1,18 @@
+[package]
+name = "pb-server"
+description = "upscaler-bridge: PixelBoost's diagnostics / temporary storage server (Rust port of the FastAPI service, same API)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "upscaler-bridge"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json", "macros"] }
+serde_json.workspace = true
+uuid = { version = "1", features = ["v4"] }
+imagesize = "0.13"

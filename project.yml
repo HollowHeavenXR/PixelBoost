@@ -14,7 +14,7 @@ settings:
     SWIFT_VERSION: "5.10"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     TARGETED_DEVICE_FAMILY: "1,2"
-    MARKETING_VERSION: "4.4.0"
+    MARKETING_VERSION: "5.0.0"
     CURRENT_PROJECT_VERSION: "1"
     ENABLE_BITCODE: "NO"
   configs:
@@ -34,47 +34,18 @@ targets:
         embed: true
       - target: PixelBoostWidgets
         embed: true
-      # EXRDecoder.mm builds with TINYEXR_USE_MINIZ 0 and includes the
-      # system <zlib.h> for ZIP-compressed EXR channels (Blender's default
-      # EXR compression) rather than also vendoring miniz — see
-      # Vendor/TinyEXR/README.md.
-      - sdk: libz.tbd
+      # The Rust engine (rust/crates/pb-ffi), built by scripts/build-core.sh
+      # into RustCore/ before XcodeGen runs. Static library: not embedded.
+      - framework: RustCore/PixelBoostCore.xcframework
+        embed: false
     sources:
       - path: PixelBoost/Sources
-      # Drop a RealESRGAN*.mlmodel/.mlpackage (or your own converted model)
-      # into Models/ and Xcode compiles it to .mlmodelc and bundles it
-      # automatically — .mlmodel/.mlpackage must go under `sources:` (not
-      # `resources:`) for Xcode's Core ML compiler build step to run at all;
-      # under `resources:` it would just copy the raw, uncompiled model.
-      # See Models/README.md for how to get one.
-      #
-      # excludes the docs/scripts sitting alongside the model: Xcode's
-      # bundle-copy step flattens directory structure, so Models/README.md
-      # and Models/convert/README.md would otherwise both land at
-      # PixelBoost.app/README.md and the archive fails with "Multiple
-      # commands produce ... README.md".
-      - path: Models
-        excludes:
-          - "*.md"
-          - "convert/**"
-      # Vendored Lua 5.4 interpreter (MIT-licensed, see Vendor/Lua/README.md)
-      # backing the Scripted Filter tool's sandboxed `apply(r,g,b,a)` — a
-      # handful of plain C files, no external package manager involved.
-      # excludes: the .md/LICENSE docs sitting alongside the sources, same
-      # "Multiple commands produce" reasoning as the Models excludes above.
-      - path: Vendor/Lua
-        excludes:
-          - "*.md"
-          - "LICENSE"
-      # Vendored TinyEXR (BSD-3-Clause, see Vendor/TinyEXR/README.md) —
-      # single-header C++ EXR decoder backing EXR import (EXRDecoder.mm).
-      # Same excludes reasoning as Vendor/Lua above.
-      - path: Vendor/TinyEXR
-        excludes:
-          - "*.md"
-          - "LICENSE"
+      - path: RustCore/PixelBoostCore.swift
     resources:
       - path: PixelBoost/Resources/Assets.xcassets
+      # PixelBoost's own .pbnn models, bundled as a folder (pbnn/ in the app).
+      - path: Models/pbnn
+        type: folder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pixelboost.ios
@@ -82,15 +53,6 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
-        SWIFT_OBJC_BRIDGING_HEADER: PixelBoost/Sources/PixelBoost-Bridging-Header.h
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/Lua/include $(SRCROOT)/Vendor/TinyEXR/include"
-        # Lua's own sources use old-style K&R-ish C with some patterns
-        # (implicit conversions, sign comparisons) that trip Swift/Xcode's
-        # stricter default warning set — never errors, just noisy, so
-        # dialed down for this one vendored library rather than upstream
-        # patched to satisfy a different toolchain's warning flags.
-        GCC_WARN_64_TO_32_BIT_CONVERSION: "NO"
-        CLANG_WARN_DOCUMENTATION_COMMENTS: "NO"
         # Empty by default — local/dev builds get no key, and ServerConfig.apiKey
         # falls back to nil (no Authorization header sent, matching a server
         # with no API key configured). CI overrides this on the xcodebuild

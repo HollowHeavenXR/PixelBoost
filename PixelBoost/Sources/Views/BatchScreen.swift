@@ -1,0 +1,152 @@
+import ActivityKit
+import PhotosUI
+import SwiftUI
+
+/// Queue many photos, upscale them one after another with the current
+/// Upscale settings, save each to Photos.
+struct BatchScreen: View {
+    @EnvironmentObject var app: AppModel
+    @StateObject private var job = UpscaleJob()
+    @State private var items: [PhotosPickerItem] = []
+    @State private var queue: [BatchItem] = []
+    @State private var running = false
+    @State private var cancelled = false
+    @AppStorage("batch.save") private var saveToPhotos = true
+
+    @AppStorage("up.model") private var model = "auto"
+    @AppStorage("up.scale") private var scale = 4.0
+    @AppStorage("up.fidelity") private var fidelity = "natural"
+    @AppStorage("up.detail") private var detail = 0.35
+    @AppStorage("up.quality") private var quality = 1
+    @AppStorage("up.denoise") private var denoise = 0.0
+
+    struct BatchItem: Identifiable {
+        let id = UUID()
+        var source: URL?
+        var status = "Waiting"
+        var result: URL?
+        var thumb: UIImage?
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    PhotosPicker(selection: $items, maxSelectionCount: 50, matching: .images) {
+                        Label("Add photos", systemImage: "plus.circle.fill")
+                    }
+                    .disabled(running)
+                    Toggle("Save results to Photos", isOn: $saveToPhotos)
+                    Text("Uses your Upscale settings: \(model == "auto" ? "Auto" : model), \(Int(scale))×, \(fidelity).")
+                        .font(.caption).foregroundStyle(Theme.dim)
+                }
+                if !queue.isEmpty {
+                    Section("Queue") {
+                        ForEach(queue) { item in
+                            HStack(spacing: 12) {
+                                Group {
+                                    if let t = item.thumb { Image(uiImage: t).resizable().scaledToFill() } else { Theme.panel2 }
+                                }
+                                .frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 8))
+                                Text(item.status).font(.subheadline)
+                                Spacer()
+                                if let r = item.result { ShareLink(item: r) { Image(systemName: "square.and.arrow.up") } }
+                            }
+                        }
+                        .onDelete { idx in if !running { queue.remove(atOffsets: idx) } }
+                    }
+                    if running {
+                        Section {
+                            ProgressView(value: job.progress) { Text("Current photo") }
+                            Button("Stop after this photo", role: .destructive) { cancelled = true }
+                        }
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Theme.canvas)
+            .navigationTitle("Batch")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(running ? "Running…" : "Start") { start() }
+                        .disabled(running || queue.allSatisfy { $0.result != nil })
+                }
+            }
+        }
+        .onChange(of: items) { _, new in
+            guard !new.isEmpty else { return }
+            let picked = new
+            items = []
+            Task {
+                for p in picked {
+                    var b = BatchItem()
+                    if let u = try? await PhotoIO.importItem(p) {
+                        b.source = u
+                        b.thumb = (try? Core.engine.loadPreview(path: u.path, maxSide: 160))?.uiImage
+                    } else {
+                        b.status = "Couldn't read"
+                    }
+                    queue.append(b)
+                }
+            }
+        }
+    }
+
+    private func start() {
+        running = true
+        cancelled = false
+        let activity = BatchActivity.start(total: queue.count)
+        UIApplication.shared.isIdleTimerDisabled = true
+        Task {
+            var finished = 0
+            for i in queue.indices {
+                if cancelled { break }
+                guard queue[i].result == nil, let src = queue[i].source,
+                      let info = try? Core.engine.imageInfo(path: src.path) else { continue }
+                queue[i].status = "Upscaling…"
+                BatchActivity.update(activity, done: finished, total: queue.count, name: "Photo \(i + 1)")
+                let s = UpscaleSettings(model: model, scale: Float(scale), fidelity: fidelity, detail: Float(detail),
+                                        denoise: Float(denoise), ensemble: UInt32(quality), tile: 128)
+                let o = await job.run(input: src, settings: s, base: nil,
+                                      outW: Int(Double(info.width) * scale), outH: Int(Double(info.height) * scale))
+                if let o {
+                    let url = URL(fileURLWithPath: o.outputPath)
+                    queue[i].result = url
+                    queue[i].status = "\(o.width)×\(o.height) · \(UpscaleScreen.duration(o.seconds))"
+                    if saveToPhotos { try? await PhotoIO.saveToPhotos(url) }
+                    let entry = HistoryEntry(id: "", createdAt: 0, model: o.model, scale: Float(scale), inWidth: info.width, inHeight: info.height,
+                                             outWidth: o.width, outHeight: o.height, seconds: o.seconds, fidelityDb: o.fidelityDb, resultPath: "", thumbPath: "")
+                    _ = try? Core.history.add(entry: entry, resultFile: o.outputPath)
+                } else {
+                    queue[i].status = "Failed"
+                }
+                finished += 1
+            }
+            BatchActivity.end(activity, done: finished, total: queue.count)
+            UIApplication.shared.isIdleTimerDisabled = false
+            app.log("batch", ["count": finished])
+            running = false
+        }
+    }
+}
+
+enum BatchActivity {
+    static func start(total: Int) -> Activity<BatchUpscaleActivityAttributes>? {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return nil }
+        let state = BatchUpscaleActivityAttributes.ContentState(completedCount: 0, totalCount: total, currentFileName: nil)
+        return try? Activity.request(attributes: BatchUpscaleActivityAttributes(startedAt: Date()),
+                                     content: .init(state: state, staleDate: nil))
+    }
+
+    static func update(_ a: Activity<BatchUpscaleActivityAttributes>?, done: Int, total: Int, name: String) {
+        guard let a else { return }
+        let state = BatchUpscaleActivityAttributes.ContentState(completedCount: done, totalCount: total, currentFileName: name)
+        Task { await a.update(.init(state: state, staleDate: nil)) }
+    }
+
+    static func end(_ a: Activity<BatchUpscaleActivityAttributes>?, done: Int, total: Int) {
+        guard let a else { return }
+        let state = BatchUpscaleActivityAttributes.ContentState(completedCount: done, totalCount: total, currentFileName: nil)
+        Task { await a.end(.init(state: state, staleDate: nil), dismissalPolicy: .default) }
+    }
+}
