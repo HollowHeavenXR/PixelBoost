@@ -18,7 +18,7 @@ pub enum Filter {
 }
 
 impl Filter {
-    fn support(self) -> f32 {
+    pub fn support(self) -> f32 {
         match self {
             Filter::Box => 0.5,
             Filter::Triangle => 1.0,
@@ -27,7 +27,7 @@ impl Filter {
         }
     }
 
-    fn eval(self, x: f32) -> f32 {
+    pub fn eval(self, x: f32) -> f32 {
         let x = x.abs();
         match self {
             Filter::Box => {

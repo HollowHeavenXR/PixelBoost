@@ -8,3 +8,4 @@ PixelBoost
 PixelBoostShare
 PixelBoostWidgets
 RustCore
+!worker/Dockerfile

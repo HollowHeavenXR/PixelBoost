@@ -8,11 +8,11 @@ struct PhotoPickerButton: View {
 
     var body: some View {
         PhotosPicker(selection: $item, matching: .images, photoLibrary: .shared()) {
-            Label(title, systemImage: "photo.on.rectangle")
-                .fontWeight(.semibold)
-                .frame(maxWidth: 280)
-                .padding(.vertical, 13)
-                .background(Theme.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Label(title, systemImage: "photo.on.rectangle.angled")
+                .fontWeight(.bold)
+                .frame(maxWidth: 300)
+                .padding(.vertical, 15)
+                .background(Theme.energy, in: Capsule())
                 .foregroundStyle(.black)
         }
         .onChange(of: item) { _, new in

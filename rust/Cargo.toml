@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pb-nn", "crates/pb-core", "crates/pb-cli", "crates/pb-ffi", "crates/pb-server"]
+members = ["crates/pb-nn", "crates/pb-core", "crates/pb-cli", "crates/pb-ffi", "crates/pb-server", "crates/pb-worker"]
 
 [workspace.package]
 version = "5.0.0"

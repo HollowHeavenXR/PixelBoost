@@ -17,6 +17,64 @@ pub struct StoredImage {
     pub label: String,
 }
 
+/// A server-side upscale job.
+#[derive(uniffi::Record, Clone)]
+pub struct CloudJob {
+    pub id: String,
+    /// queued | running | done | failed | cancelled
+    pub status: String,
+    pub progress: f32,
+    /// 1 = next up (0 when not queued).
+    pub queue_position: u32,
+    pub label: String,
+    pub filename: String,
+    pub created_at: f64,
+    pub expires_at: f64,
+    pub in_width: u32,
+    pub in_height: u32,
+    pub out_width: u32,
+    pub out_height: u32,
+    pub scale: f32,
+    pub model: String,
+    pub seconds: f64,
+    pub fidelity_db: f64,
+    pub result_bytes: u64,
+    pub capped: bool,
+    pub error: String,
+}
+
+/// Download progress (bytes so far, total).
+#[uniffi::export(with_foreign)]
+pub trait DownloadListener: Send + Sync {
+    fn on_progress(&self, received: u64, total: u64);
+}
+
+fn job_from(v: &Value) -> CloudJob {
+    let st = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let f = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    CloudJob {
+        id: st("id"),
+        status: st("status"),
+        progress: f("progress") as f32,
+        queue_position: f("queue_position") as u32,
+        label: st("label"),
+        filename: st("filename"),
+        created_at: f("created_at"),
+        expires_at: f("expires_at"),
+        in_width: f("in_w") as u32,
+        in_height: f("in_h") as u32,
+        out_width: f("out_w") as u32,
+        out_height: f("out_h") as u32,
+        scale: v.get("settings").and_then(|s| s.get("scale")).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+        model: st("model_used"),
+        seconds: f("seconds"),
+        fidelity_db: f("fidelity_db"),
+        result_bytes: f("result_bytes") as u64,
+        capped: v.get("capped").and_then(|x| x.as_bool()).unwrap_or(false),
+        error: st("error"),
+    }
+}
+
 #[derive(Clone)]
 struct Config {
     base: String,
@@ -121,6 +179,98 @@ impl ServerClient {
             .into_json()
             .map_err(err)?;
         Ok(v.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string())
+    }
+
+    /// Send a photo for server-side upscaling. `settings_json` uses the
+    /// worker's keys: model, scale, fidelity, detail, denoise, ensemble,
+    /// format ("png" | "jpg").
+    pub fn submit_job(&self, path: String, settings_json: String, label: String) -> Result<CloudJob, PbError> {
+        let c = self.cfg.lock().unwrap().clone();
+        let bytes = std::fs::read(&path).map_err(err)?;
+        let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "photo.png".into());
+        let boundary = format!("pb{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let mut body = Vec::with_capacity(bytes.len() + 2048);
+        for (k, v) in [("device_id", c.device.clone()), ("settings", settings_json), ("label", label)] {
+            body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n").as_bytes());
+        }
+        body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n").as_bytes());
+        body.extend_from_slice(&bytes);
+        drop(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let v: Value = auth(self.agent.post(&format!("{}/jobs", c.base)), &c.key)
+            .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"))
+            .send_bytes(&body)
+            .map_err(read_err)?
+            .into_json()
+            .map_err(err)?;
+        Ok(job_from(&v))
+    }
+
+    pub fn list_jobs(&self) -> Result<Vec<CloudJob>, PbError> {
+        let c = self.cfg.lock().unwrap().clone();
+        let v: Value = auth(self.agent.get(&format!("{}/jobs", c.base)).query("device_id", &c.device), &c.key).call().map_err(read_err)?.into_json().map_err(err)?;
+        Ok(v.get("entries").and_then(|e| e.as_array()).map(|a| a.iter().map(job_from).collect()).unwrap_or_default())
+    }
+
+    pub fn get_job(&self, id: String) -> Result<CloudJob, PbError> {
+        let c = self.cfg.lock().unwrap().clone();
+        let v: Value = auth(self.agent.get(&format!("{}/jobs/{id}", c.base)), &c.key).call().map_err(read_err)?.into_json().map_err(err)?;
+        Ok(job_from(&v))
+    }
+
+    /// Cancel (if still running) and delete a job and its result.
+    pub fn delete_job(&self, id: String) -> Result<(), PbError> {
+        let c = self.cfg.lock().unwrap().clone();
+        auth(self.agent.delete(&format!("{}/jobs/{id}", c.base)), &c.key).call().map_err(read_err)?;
+        Ok(())
+    }
+
+    pub fn download_job_thumb(&self, id: String, dest_path: String) -> Result<(), PbError> {
+        let c = self.cfg.lock().unwrap().clone();
+        let resp = auth(self.agent.get(&format!("{}/jobs/{id}/thumb", c.base)), &c.key).call().map_err(read_err)?;
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut resp.into_reader(), &mut buf).map_err(err)?;
+        std::fs::write(dest_path, buf).map_err(err)
+    }
+
+    /// Download the full-resolution result to `dest_path`, resuming a
+    /// partial `dest_path.part` from an earlier attempt.
+    pub fn download_job(&self, id: String, dest_path: String, listener: Arc<dyn DownloadListener>) -> Result<(), PbError> {
+        use std::io::{Read, Write};
+        let c = self.cfg.lock().unwrap().clone();
+        let part = format!("{dest_path}.part");
+        let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        let mut req = auth(self.agent.get(&format!("{}/jobs/{id}/result", c.base)), &c.key);
+        if have > 0 {
+            req = req.set("Range", &format!("bytes={have}-"));
+        }
+        let resp = req.call().map_err(read_err)?;
+        let resumed = resp.status() == 206;
+        let len: u64 = resp.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let total = if resumed { have + len } else { len };
+        let mut file = std::fs::OpenOptions::new().create(true).write(true).append(resumed).truncate(!resumed).open(&part).map_err(err)?;
+        let mut got = if resumed { have } else { 0 };
+        let mut reader = resp.into_reader();
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut last = std::time::Instant::now();
+        loop {
+            let n = reader.read(&mut buf).map_err(err)?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n]).map_err(err)?;
+            got += n as u64;
+            if last.elapsed().as_millis() > 150 {
+                last = std::time::Instant::now();
+                listener.on_progress(got, total);
+            }
+        }
+        file.flush().map_err(err)?;
+        if total > 0 && got < total {
+            return Err(err(format!("download interrupted at {got} of {total} bytes — try again to resume")));
+        }
+        listener.on_progress(got, total.max(got));
+        std::fs::rename(&part, &dest_path).map_err(err)
     }
 
     pub fn list_exports(&self) -> Result<Vec<StoredImage>, PbError> {

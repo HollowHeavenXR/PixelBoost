@@ -11,6 +11,12 @@ pub mod models;
 pub mod ops;
 pub mod pipeline;
 pub mod resample;
+pub mod stream;
 
 pub use engine::{Engine, TileEvent, TileOptions};
 pub use image::Image;
+
+/// Which SIMD convolution kernel is active.
+pub fn kernel_name() -> &'static str {
+    pb_nn::conv::kernel_name()
+}

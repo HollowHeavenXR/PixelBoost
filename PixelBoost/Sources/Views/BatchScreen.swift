@@ -13,12 +13,7 @@ struct BatchScreen: View {
     @State private var cancelled = false
     @AppStorage("batch.save") private var saveToPhotos = true
 
-    @AppStorage("up.model") private var model = "auto"
-    @AppStorage("up.scale") private var scale = 4.0
-    @AppStorage("up.fidelity") private var fidelity = "natural"
-    @AppStorage("up.detail") private var detail = 0.35
-    @AppStorage("up.quality") private var quality = 1
-    @AppStorage("up.denoise") private var denoise = 0.0
+    let choice = UpscaleChoice()
 
     struct BatchItem: Identifiable {
         let id = UUID()
@@ -37,7 +32,7 @@ struct BatchScreen: View {
                     }
                     .disabled(running)
                     Toggle("Save results to Photos", isOn: $saveToPhotos)
-                    Text("Uses your Upscale settings: \(model == "auto" ? "Auto" : model), \(Int(scale))×, \(fidelity).")
+                    Text("Runs on this iPhone with your upscale settings: \(UpscaleChoice.name(choice.model)), \(Int(choice.scale))×, \(choice.fidelity). For big batches, send them to PixelBoost Cloud instead.")
                         .font(.caption).foregroundStyle(Theme.dim)
                 }
                 if !queue.isEmpty {
@@ -65,7 +60,7 @@ struct BatchScreen: View {
             }
             .scrollContentBackground(.hidden)
             .background(Theme.canvas)
-            .navigationTitle("Batch")
+            .navigationTitle("Batch on iPhone")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(running ? "Running…" : "Start") { start() }
@@ -105,14 +100,14 @@ struct BatchScreen: View {
                       let info = try? Core.engine.imageInfo(path: src.path) else { continue }
                 queue[i].status = "Upscaling…"
                 BatchActivity.update(activity, done: finished, total: queue.count, name: "Photo \(i + 1)")
-                let s = UpscaleSettings(model: model, scale: Float(scale), fidelity: fidelity, detail: Float(detail),
-                                        denoise: Float(denoise), ensemble: UInt32(quality), tile: 128)
+                let s = choice.settings
+                let scale = choice.scale
                 let o = await job.run(input: src, settings: s, base: nil,
                                       outW: Int(Double(info.width) * scale), outH: Int(Double(info.height) * scale))
                 if let o {
                     let url = URL(fileURLWithPath: o.outputPath)
                     queue[i].result = url
-                    queue[i].status = "\(o.width)×\(o.height) · \(UpscaleScreen.duration(o.seconds))"
+                    queue[i].status = "\(o.width)×\(o.height) · \(formatDuration(o.seconds))"
                     if saveToPhotos { try? await PhotoIO.saveToPhotos(url) }
                     let entry = HistoryEntry(id: "", createdAt: 0, model: o.model, scale: Float(scale), inWidth: info.width, inHeight: info.height,
                                              outWidth: o.width, outHeight: o.height, seconds: o.seconds, fidelityDb: o.fidelityDb, resultPath: "", thumbPath: "")

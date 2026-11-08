@@ -32,14 +32,29 @@ pub fn upscale_cmd(args: &[String]) -> Result<(), String> {
     if let Some(t) = flag(args, "--tile").and_then(|v| v.parse().ok()) {
         st.tile = t;
     }
-    let (out, rep) = upscale(&eng, &img, &st, &mut |e| {
+    if let Some(e) = flag(args, "--ensemble").and_then(|v| v.parse().ok()) {
+        st.ensemble = e;
+    }
+    if args.iter().any(|a| a == "--legacy") {
+        let (out, rep) = upscale(&eng, &img, &st, &mut |e| {
+            eprint!("\r  {} tile {}/{}   ", model, e.done, e.total);
+            true
+        })
+        .ok_or("cancelled")?;
+        eprintln!();
+        out.save(&args[2])?;
+        println!("{}", serde_json::to_string_pretty(&rep).unwrap());
+        return Ok(());
+    }
+    let lim = pb_core::stream::Limits { max_output_px: flag(args, "--max-mp").and_then(|v| v.parse::<f64>().ok()).map(|m| (m * 1e6) as usize).unwrap_or(400_000_000) };
+    let (out, rep, capped) = pb_core::stream::upscale(&eng, &img, &st, lim, &mut |e| {
         eprint!("\r  {} tile {}/{}   ", model, e.done, e.total);
         true
     })
     .ok_or("cancelled")?;
     eprintln!();
-    out.save(&args[2])?;
-    println!("{}", serde_json::to_string_pretty(&rep).unwrap());
+    out.save(&args[2], 95)?;
+    println!("{}\ncapped: {capped}", serde_json::to_string_pretty(&rep).unwrap());
     Ok(())
 }
 

@@ -53,7 +53,7 @@ pub struct Report {
 /// Give fully transparent pixels the colour of their nearest visible
 /// neighbours so the model never sees the arbitrary colour stored under
 /// transparency (which would bleed into edges).
-fn bleed_transparent(img: &Image) -> Image {
+pub(crate) fn bleed_transparent(img: &Image) -> Image {
     let mut out = img.clone();
     let (w, h) = (img.w, img.h);
     let mut known: Vec<bool> = img.px.iter().map(|p| p[3] > 0.004).collect();

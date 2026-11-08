@@ -5,7 +5,7 @@
 
 use pb_core::fidelity::Fidelity;
 use pb_core::image::Format;
-use pb_core::pipeline::{self, Settings};
+use pb_core::pipeline::Settings;
 use pb_core::{classify, models, ops, Engine, Image};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -53,6 +53,8 @@ pub struct UpscaleSettings {
     /// 1, 2, 4 or 8.
     pub ensemble: u32,
     pub tile: u32,
+    /// Output cap in megapixels (0 = default 120).
+    pub max_output_mp: f32,
 }
 
 #[derive(uniffi::Record, Clone)]
@@ -65,6 +67,8 @@ pub struct UpscaleOutcome {
     pub fidelity_db: f64,
     pub tiles: u32,
     pub passes: u32,
+    /// The output was made smaller than asked to fit the size cap.
+    pub capped: bool,
 }
 
 #[derive(uniffi::Record, Clone)]
@@ -92,11 +96,12 @@ pub struct RgbaImage {
 }
 
 /// Receives live progress. `rgba` is the finished tile's pixels (straight
-/// RGBA8, `w`*`h`), placed at (`x`,`y`) in output coordinates; empty when
-/// there is nothing to draw.
+/// RGBA8, `pixel_w` x `pixel_h`) to draw into the rectangle (`x`,`y`,`w`,`h`)
+/// of the final output; empty when there is nothing to draw.
 #[uniffi::export(with_foreign)]
 pub trait UpscaleListener: Send + Sync {
-    fn on_tile(&self, done: u32, total: u32, x: u32, y: u32, w: u32, h: u32, rgba: Vec<u8>);
+    #[allow(clippy::too_many_arguments)]
+    fn on_tile(&self, done: u32, total: u32, x: u32, y: u32, w: u32, h: u32, pixel_w: u32, pixel_h: u32, rgba: Vec<u8>);
 }
 
 /// Cancellation handle shared between Swift and a running job.
@@ -218,15 +223,19 @@ impl PixelBoostCore {
             pad: 16,
             ensemble: settings.ensemble.max(1) as usize,
         };
-        let res = pipeline::upscale(&engine, &img, &st, &mut |e| {
+        let lim = pb_core::stream::Limits { max_output_px: if settings.max_output_mp > 0.0 { (settings.max_output_mp as f64 * 1e6) as usize } else { 120_000_000 } };
+        let res = pb_core::stream::upscale(&engine, &img, &st, lim, &mut |e| {
             let [x, y, w, h] = e.rect;
-            let rgba = if w > 0 { e.tile.to_rgba8() } else { Vec::new() };
-            listener.on_tile(e.done as u32, e.total as u32, x as u32, y as u32, w as u32, h as u32, rgba);
+            let rgba = if w > 0 { e.pixels.data.clone() } else { Vec::new() };
+            let (pw, ph) = (e.pixels.w as u32, e.pixels.h as u32);
+            // `rect` is where the tile lands in the final output; the pixels
+            // may be at a different (first-pass) resolution.
+            listener.on_tile(e.done as u32, e.total as u32, x as u32, y as u32, w as u32, h as u32, pw, ph, rgba);
             !cancel.is_cancelled()
         });
-        let (out, rep) = res.ok_or(PbError::Cancelled)?;
-        let bytes = out.encode(fmt_for(&output_path), 95)?;
-        std::fs::write(&output_path, bytes).map_err(|e| PbError::from(e.to_string()))?;
+        drop(img);
+        let (out, rep, capped) = res.ok_or(PbError::Cancelled)?;
+        out.save(&output_path, 95)?;
         Ok(UpscaleOutcome {
             output_path,
             width: out.w as u32,
@@ -236,6 +245,7 @@ impl PixelBoostCore {
             fidelity_db: rep.fidelity_db,
             tiles: rep.tiles as u32,
             passes: rep.passes as u32,
+            capped,
         })
     }
 

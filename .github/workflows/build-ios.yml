@@ -90,6 +90,16 @@ jobs:
           fi
           echo "APP_PATH=$APP" >> "$GITHUB_ENV"
 
+      - name: Bundle the Rust engine's models
+        run: |
+          # The resources phase doesn't run for this project in CI (same
+          # reason actool is run by hand below), so copy the .pbnn models
+          # into the app explicitly and fail loudly if they're missing.
+          rm -rf "$APP_PATH/pbnn"
+          cp -R Models/pbnn "$APP_PATH/pbnn"
+          ls -la "$APP_PATH/pbnn"
+          test -f "$APP_PATH/pbnn/fast-x4.pbnn"
+
       - name: Compile asset catalogs (actool)
         run: |
           APP="$APP_PATH"

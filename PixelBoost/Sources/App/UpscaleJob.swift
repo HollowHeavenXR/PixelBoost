@@ -100,10 +100,10 @@ final class TilePainter: UpscaleListener, @unchecked Sendable {
         }
     }
 
-    func onTile(done: UInt32, total: UInt32, x: UInt32, y: UInt32, w: UInt32, h: UInt32, rgba: Data) {
+    func onTile(done: UInt32, total: UInt32, x: UInt32, y: UInt32, w: UInt32, h: UInt32, pixelW: UInt32, pixelH: UInt32, rgba: Data) {
         lock.lock()
         defer { lock.unlock() }
-        if let ctx, w > 0, let tile = RgbaImage(width: w, height: h, rgba: rgba).uiImage?.cgImage {
+        if let ctx, w > 0, pixelW > 0, let tile = RgbaImage(width: pixelW, height: pixelH, rgba: rgba).uiImage?.cgImage {
             // CGContext's origin is bottom-left.
             let r = CGRect(x: CGFloat(x) * k, y: size.height - CGFloat(y + h) * k, width: CGFloat(w) * k, height: CGFloat(h) * k)
             ctx.interpolationQuality = .high

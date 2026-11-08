@@ -75,6 +75,36 @@ impl Engine {
         self.net.macs_per_px()
     }
 
+    /// Run the network once over `region` (no tiling): the region is padded
+    /// by edge replication to the network's alignment and the result cropped
+    /// back to exactly `scale` times the region.
+    pub fn forward(&self, region: &Image) -> Image {
+        let s = self.net.scale();
+        let a = self.net.align();
+        let (w, h) = (region.w.div_ceil(a) * a, region.h.div_ceil(a) * a);
+        let mut fm = Fmap::new(h, w, 3);
+        for y in 0..h {
+            for x in 0..w {
+                let p = region.at_clamped(x as isize, y as isize);
+                fm.px_mut(y, x).copy_from_slice(&p[..3]);
+            }
+        }
+        let o = self.net.forward(&fm);
+        let (ow, oh) = (region.w * s, region.h * s);
+        let mut out = Image::new(ow, oh);
+        for y in 0..oh {
+            for x in 0..ow {
+                let v = o.px(y, x);
+                out.px[y * ow + x] = [v[0], v[1], v[2], 1.0];
+            }
+        }
+        out
+    }
+
+    pub fn align(&self) -> usize {
+        self.net.align()
+    }
+
     /// Run the network over the whole image (RGB only; alpha is ignored and
     /// returned as 1). Returns `None` if `progress` asked to stop.
     pub fn run(&self, img: &Image, opt: TileOptions, progress: &mut dyn FnMut(TileEvent<'_>) -> bool) -> Option<Image> {

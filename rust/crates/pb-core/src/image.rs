@@ -31,6 +31,12 @@ impl Format {
     }
 }
 
+/// Width and height from the file header, without decoding pixels.
+pub fn dimensions(bytes: &[u8]) -> Result<(usize, usize), String> {
+    let r = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().map_err(|e| e.to_string())?;
+    r.into_dimensions().map(|(w, h)| (w as usize, h as usize)).map_err(|e| e.to_string())
+}
+
 impl Image {
     pub fn new(w: usize, h: usize) -> Self {
         Image { w, h, px: vec![[0.0, 0.0, 0.0, 1.0]; w * h] }

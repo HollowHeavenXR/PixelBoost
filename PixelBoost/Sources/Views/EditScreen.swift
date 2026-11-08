@@ -82,36 +82,41 @@ struct EditScreen: View {
     @State private var tool: EditTool?
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if app.current == nil {
-                    EmptyPhotoState(title: "Edit a photo")
-                } else {
-                    VStack(spacing: 0) {
-                        stage.frame(maxHeight: .infinity)
-                        panel
-                    }
-                }
-            }
-            .background(Theme.canvas)
-            .navigationTitle(tool?.title ?? "Edit")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                if tool == nil, app.current != nil {
-                    ToolbarItemGroup(placement: .topBarLeading) {
-                        Button { app.undo() } label: { Image(systemName: "arrow.uturn.backward") }.disabled(!app.canUndo)
-                        Button { app.redo() } label: { Image(systemName: "arrow.uturn.forward") }.disabled(!app.canRedo)
-                    }
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        if let c = app.current { ShareLink(item: c) { Image(systemName: "square.and.arrow.up") } }
-                        Button { save() } label: { Image(systemName: "square.and.arrow.down") }
-                        PhotosMenu()
-                    }
-                }
+        VStack(spacing: 0) {
+            StudioHeader(title: tool?.title ?? "Edit")
+            if app.current == nil {
+                EmptyPhotoState(title: "Edit a photo")
+            } else {
+                if tool == nil { editBar }
+                stage.frame(maxHeight: .infinity)
+                panel
             }
         }
         .onChange(of: app.current) { _, new in session.load(new) }
         .onAppear { session.load(app.current) }
+    }
+
+    /// Undo / redo / save / share above the canvas.
+    private var editBar: some View {
+        HStack(spacing: 8) {
+            CircleButton(icon: "arrow.uturn.backward") { app.undo() }.disabled(!app.canUndo).opacity(app.canUndo ? 1 : 0.4)
+            CircleButton(icon: "arrow.uturn.forward") { app.redo() }.disabled(!app.canRedo).opacity(app.canRedo ? 1 : 0.4)
+            Spacer()
+            if let c = app.current {
+                ShareLink(item: c) {
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 16, weight: .semibold))
+                        .frame(width: 42, height: 42).background(Theme.card2, in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            CircleButton(icon: "square.and.arrow.down") { save() }
+            Button { app.mode = .upscale } label: {
+                Label("Upscale", systemImage: "wand.and.stars").font(.subheadline.weight(.bold))
+                    .padding(.horizontal, 14).frame(height: 42).background(Theme.energy, in: Capsule()).foregroundStyle(.black)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16).padding(.bottom, 6)
     }
 
     private var stage: some View {
@@ -158,11 +163,13 @@ struct EditScreen: View {
             if let tool {
                 ToolPanel(tool: tool, session: session, editor: editor) { close() }
                     .padding(14)
+                    .padding(.bottom, 4)
             } else {
                 toolGrid
             }
         }
-        .background(Theme.panel)
+        .background(Theme.card, in: UnevenRoundedRectangle(topLeadingRadius: 26, topTrailingRadius: 26, style: .continuous))
+        .padding(.bottom, 76)
     }
 
     private var toolGrid: some View {
@@ -179,7 +186,7 @@ struct EditScreen: View {
                                     Text(t.title).font(.caption2)
                                 }
                                 .frame(maxWidth: .infinity, minHeight: 64)
-                                .background(Theme.panel2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .background(Theme.card2, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                             }
                             .buttonStyle(.plain)
                         }
@@ -188,7 +195,7 @@ struct EditScreen: View {
             }
             .padding(14)
         }
-        .frame(maxHeight: 330)
+        .frame(maxHeight: 300)
     }
 
     private func open(_ t: EditTool) {
@@ -216,7 +223,7 @@ struct EditScreen: View {
     private func save() {
         guard let c = app.current else { return }
         Task {
-            do { try await PhotoIO.saveToPhotos(c); app.message = "Saved to Photos." } catch { app.message = describe(error) }
+            do { try await PhotoIO.saveToPhotos(c); app.flash("Saved to Photos") } catch { app.message = describe(error) }
         }
     }
 }

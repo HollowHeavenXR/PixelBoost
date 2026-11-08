@@ -57,6 +57,23 @@ Models/pbnn/       converted models (fp16 .pbnn)
       Rust expression filter if wanted
 - [ ] Model compare sweep UI (old "Compare Models"); server endpoints still exist
 
+## 5.1 (2026-11-08)
+
+- [x] Models were missing from the IPA (resources phase doesn't run in CI) —
+      workflows now copy Models/pbnn into the .app and check it
+- [x] Streaming pipeline (`pb_core::stream`): model + fidelity + detail +
+      resample per tile, written straight to 8-bit output. 1737x3088 -> 4x
+      High (86 MP): 541 MB peak, 5 min on this PC; matches the in-memory
+      pipeline to 69 dB. Output capped at 120 MP on phone / 300 MP server.
+- [x] PixelBoost Cloud: `pb-worker` (this PC, docker `worker/`, jobs on
+      /mnt/fastssd/pixelboost-jobs, 7-day results) + bridge on Mel streams
+      `/jobs*` to it with X-Worker-Key. E2E tested over the public URL.
+- [x] App redesign "Studio": one canvas, floating command bar
+      (Upscale / Edit / Cloud), upscale sheet with This iPhone vs Cloud,
+      Cloud screen with live jobs + full-res resumable download, on-device
+      history, settings as a sheet, background check + "Upscale ready"
+      notification.
+
 ## Bench numbers (26 gallery images, 256px GT crop -> 64px -> 4x)
 
 Final settings (`pixelboost eval testimages/src OUT --crop 256`):

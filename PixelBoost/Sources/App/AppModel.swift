@@ -6,9 +6,12 @@ import UIKit
 /// only tracks file URLs.
 @MainActor
 final class AppModel: ObservableObject {
-    enum Tab: Hashable { case upscale, edit, batch, history, settings }
+    enum Mode: Hashable { case upscale, edit, cloud }
 
-    @Published var tab: Tab = .upscale
+    @Published var mode: Mode = .upscale
+    @Published var showSettings = false
+    /// Short confirmation shown over the canvas ("Sent to Cloud").
+    @Published var toast: String?
     /// Current working image file.
     @Published private(set) var current: URL?
     @Published private(set) var preview: UIImage?
@@ -85,7 +88,15 @@ final class AppModel: ObservableObject {
     func pickUpSharedPhoto() {
         if let img = SharedPhotoBridge.consumePendingImage(), let data = img.pngData() {
             importData(data)
-            tab = .upscale
+            mode = .upscale
+        }
+    }
+
+    func flash(_ text: String) {
+        toast = text
+        Task {
+            try? await Task.sleep(nanoseconds: 2_600_000_000)
+            if toast == text { toast = nil }
         }
     }
 

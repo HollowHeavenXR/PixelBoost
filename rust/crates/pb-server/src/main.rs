@@ -8,7 +8,7 @@ use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use serde_json::{json, Map, Value};
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -25,6 +25,43 @@ const MAX_TTL_HOURS: i64 = 24 * 7;
 struct App {
     db: PgPool,
     api_key: Arc<String>,
+    /// Upscale worker (pixelboost-worker) base URL and its key; `/jobs*`
+    /// requests are streamed through to it.
+    jobs_upstream: Arc<String>,
+    worker_key: Arc<String>,
+    http: reqwest::Client,
+}
+
+// ---------------------------------------------------------------- jobs proxy
+
+async fn jobs_proxy(State(app): State<App>, req: Request) -> Response {
+    if app.jobs_upstream.is_empty() {
+        return err(StatusCode::SERVICE_UNAVAILABLE, "Server upscaling is not configured").into_response();
+    }
+    let pq = req.uri().path_and_query().map(|p| p.as_str().to_string()).unwrap_or_default();
+    let url = format!("{}{pq}", app.jobs_upstream.trim_end_matches('/'));
+    let method = req.method().clone();
+    let mut rb = app.http.request(method, url).header("x-worker-key", app.worker_key.as_str());
+    for h in [header::CONTENT_TYPE, header::CONTENT_LENGTH, header::RANGE] {
+        if let Some(v) = req.headers().get(&h) {
+            rb = rb.header(h.as_str(), v.as_bytes());
+        }
+    }
+    let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream());
+    let resp = match rb.body(body).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("jobs proxy: {e}");
+            return err(StatusCode::SERVICE_UNAVAILABLE, "The upscale server is offline right now").into_response();
+        }
+    };
+    let mut out = Response::builder().status(resp.status().as_u16());
+    for h in ["content-type", "content-length", "content-range", "accept-ranges", "content-disposition"] {
+        if let Some(v) = resp.headers().get(h) {
+            out = out.header(h, v.as_bytes());
+        }
+    }
+    out.body(axum::body::Body::from_stream(resp.bytes_stream())).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
 }
 
 // ---------------------------------------------------------------- errors
@@ -654,7 +691,14 @@ async fn main() {
         .await
         .expect("connect to Postgres");
     init_db(&db).await.expect("schema migration");
-    let app = App { db: db.clone(), api_key: Arc::new(env("UPSCALER_BRIDGE_API_KEY", "")) };
+    let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).build().expect("http client");
+    let app = App {
+        db: db.clone(),
+        api_key: Arc::new(env("UPSCALER_BRIDGE_API_KEY", "")),
+        jobs_upstream: Arc::new(env("JOBS_UPSTREAM", "")),
+        worker_key: Arc::new(env("WORKER_KEY", "")),
+        http,
+    };
 
     // Hourly expiry sweep.
     let sweep = db.clone();
@@ -707,6 +751,8 @@ async fn main() {
         .route("/presets/{id}", delete(delete_preset))
         .route("/device-settings", put(put_device_settings).get(get_device_settings))
         .route("/models", get(list_models))
+        .route("/jobs", any(jobs_proxy))
+        .route("/jobs/{*rest}", any(jobs_proxy))
         .layer(middleware::from_fn_with_state(app.clone(), auth))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + 1024 * 1024))
         .with_state(app);

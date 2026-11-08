@@ -1,0 +1,30 @@
+# Server-side upscaling for the PixelBoost app. Runs on the CachyOS PC;
+# upscaler-bridge on Mel forwards /jobs* here with X-Worker-Key.
+services:
+  pixelboost-worker:
+    build:
+      context: ..
+      dockerfile: worker/Dockerfile
+    image: pixelboost-worker:latest
+    container_name: pixelboost_worker
+    restart: unless-stopped
+    user: "1000:1000"
+    # Published (not host network) so Mel can reach it; requests without the
+    # worker key are refused.
+    ports:
+      - "8095:8095"
+    environment:
+      - WORKER_KEY=${WORKER_KEY}
+      - RAYON_NUM_THREADS=6
+      - MAX_OUTPUT_MP=300
+      - RESULT_TTL_HOURS=168
+    volumes:
+      - /mnt/fastssd/pixelboost-jobs:/jobs
+      - ../Models/pbnn:/models:ro
+    mem_limit: 3g
+    cpus: 6
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8095/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

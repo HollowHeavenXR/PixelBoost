@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.pixelboost.cloudcheck</string>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
@@ -22,14 +26,16 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>PixelBoost uses this to update the original photo in place when you save an edit, instead of adding a duplicate.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>PixelBoost saves the edited image to your photo library.</string>
-	<key>UpscalerBridgeAPIKey</key>
-	<string>$(UPSCALER_BRIDGE_API_KEY)</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>PixelBoost uses this to update the original photo in place when you save an edit, instead of adding a duplicate.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UIRequiredDeviceCapabilities</key>
@@ -42,5 +48,7 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UpscalerBridgeAPIKey</key>
+	<string>$(UPSCALER_BRIDGE_API_KEY)</string>
 </dict>
 </plist>

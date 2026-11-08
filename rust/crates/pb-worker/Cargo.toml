@@ -1,0 +1,19 @@
+[package]
+name = "pb-worker"
+description = "PixelBoost upscale worker: queues photos sent from the app, upscales them with the Rust engine, serves the results"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pixelboost-worker"
+path = "src/main.rs"
+
+[dependencies]
+pb-core = { path = "../pb-core" }
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", "io-util", "signal"] }
+tokio-util = { version = "0.7", features = ["io"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid = { version = "1", features = ["v4"] }

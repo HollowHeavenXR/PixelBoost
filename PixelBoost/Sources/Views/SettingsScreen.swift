@@ -7,6 +7,7 @@ struct SettingsScreen: View {
     @AppStorage("pb.telemetry") private var telemetry = true
     @State private var health: String?
     @State private var exports: [StoredImage] = []
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -28,9 +29,9 @@ struct SettingsScreen: View {
                     Button("Test connection") { test() }
                     if let health { Text(health).font(.caption).foregroundStyle(Theme.dim) }
                 } header: { Text("Server") } footer: {
-                    Text("Used for diagnostics and 24-hour cloud handoff. Upscaling never leaves the device.")
+                    Text("PixelBoost Cloud upscales run on the PixelBoost server through this address; results are kept 7 days. On-device upscales never leave the phone.")
                 }
-                Section("Cloud handoff") {
+                Section("Temporary uploads (24h)") {
                     Button("Refresh") { refreshExports() }
                     ForEach(exports, id: \.id) { e in
                         HStack {
@@ -55,6 +56,7 @@ struct SettingsScreen: View {
             .scrollContentBackground(.hidden)
             .background(Theme.canvas)
             .navigationTitle("Settings")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
             .onChange(of: server) { _, _ in Core.server.configure(baseUrl: server, apiKey: Prefs.apiKey) }
             .onChange(of: apiKey) { _, _ in Core.server.configure(baseUrl: server, apiKey: Prefs.apiKey) }
         }
@@ -91,7 +93,7 @@ struct SettingsScreen: View {
             let r = Result { try Core.server.downloadExport(id: e.id, destPath: dest.path) }
             await MainActor.run {
                 switch r {
-                case .success: app.setPhoto(dest); app.tab = .upscale
+                case .success: app.setPhoto(dest); app.mode = .upscale; dismiss()
                 case .failure(let err): app.message = describe(err)
                 }
             }
