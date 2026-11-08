@@ -11,9 +11,22 @@ struct ToolPanel: View {
     let close: () -> Void
     @EnvironmentObject var app: AppModel
 
+    init(tool: EditTool, session: ToolSession, editor: EditorState, close: @escaping () -> Void) {
+        self.tool = tool
+        self.session = session
+        self.editor = editor
+        self.close = close
+    }
+
     // Adjust
-    @State private var brightness = 0.0, contrast = 1.0, saturation = 1.0, exposure = 0.0
-    @State private var warmth = 0.0, highlights = 0.0, shadows = 0.0, vignette = 0.0
+    @State private var brightness = 0.0
+    @State private var contrast = 1.0
+    @State private var saturation = 1.0
+    @State private var exposure = 0.0
+    @State private var warmth = 0.0
+    @State private var highlights = 0.0
+    @State private var shadows = 0.0
+    @State private var vignette = 0.0
     @State private var curve: [Double] = [0, 0.25, 0.5, 0.75, 1]
     // Looks
     @State private var look = "vivid"
@@ -21,19 +34,25 @@ struct ToolPanel: View {
     // Crop
     @State private var straighten = 0.0
     // Restore
-    @State private var denoise = 0.0, sharpen = 0.0
+    @State private var denoise = 0.0
+    @State private var sharpen = 0.0
     // Pixel art
-    @State private var cell = 8.0, colors = 16.0, dither = false, outline = false
+    @State private var cell = 8.0
+    @State private var colors = 16.0
+    @State private var dither = false
+    @State private var outline = false
     // LUT / maps
     @State private var lutURL: URL?
     @State private var mapURL: URL?
     @State private var showImporter = false
-    @State private var fogDensity = 0.5, fogStart = 0.2
+    @State private var fogDensity = 0.5
+    @State private var fogStart = 0.2
     @State private var fogColor = Color(white: 0.85)
     @State private var mapMode = "ao"
     // Texture
     @State private var textureMode = "seamless"
-    @State private var strength = 2.0, blend = 0.25
+    @State private var strength = 2.0
+    @State private var blend = 0.25
     // Cutout
     @State private var maskURL: URL?
     @State private var cutBusy = false
@@ -214,8 +233,7 @@ struct ToolPanel: View {
                     Button { session.apply(opJSON("flip", ["horizontal": false]), to: app, name: "flip") } label: { Image(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down") }
                 }
                 .buttonStyle(.bordered)
-                ChipPicker(options: [(CGFloat(0), "Free"), (1, "1:1"), (4.0 / 5, "4:5"), (5.0 / 4, "5:4"), (16.0 / 9, "16:9"), (9.0 / 16, "9:16")],
-                           selection: Binding(get: { editor.cropAspect ?? 0 }, set: { a in setAspect(a) }))
+                ChipPicker(options: Self.aspects, selection: aspectBinding)
                 SliderRow(label: "Straighten", value: $straighten, range: -45...45, format: { String(format: "%.1f°", $0) })
             }
         case .restore:
@@ -308,6 +326,14 @@ struct ToolPanel: View {
                 Button { editor.strokes.removeAll() } label: { Image(systemName: "trash") }.disabled(editor.strokes.isEmpty)
             }
         }
+    }
+
+    static let aspects: [(CGFloat, String)] = [
+        (0, "Free"), (1, "1:1"), (0.8, "4:5"), (1.25, "5:4"), (16.0 / 9.0, "16:9"), (9.0 / 16.0, "9:16"),
+    ]
+
+    private var aspectBinding: Binding<CGFloat> {
+        Binding(get: { editor.cropAspect ?? 0 }, set: { a in setAspect(a) })
     }
 
     private func setAspect(_ a: CGFloat) {

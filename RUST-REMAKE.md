@@ -44,12 +44,10 @@ Models/pbnn/       converted models (fp16 .pbnn)
       a scratch Postgres DB + the app's Rust client round-trip test
 - [ ] First CI build of the new app (Swift written without a local Xcode —
       fix whatever the compiler reports)
-- [ ] Deploy Rust upscaler-bridge on Mel (Python image kept as rollback) —
-      image built locally (`pixelboost-upscaler-bridge:latest`); the remote
-      deploy was blocked by the session's permission check, needs the user
-- [ ] CI blocked 2026-11-08: GitHub refused to start the macOS job ("recent
-      account payments have failed or your spending limit needs to be
-      increased") — fix billing, then re-run "Build iOS IPA" and tag v5.0.0
+- [x] Rust upscaler-bridge deployed on Mel 2026-11-08 (rollback image
+      `music-upscaler-bridge:python-backup`, compose backup
+      `docker-compose.yml.bak-pbrust-20261108`); verified with live data
+- [x] Repo made public 2026-11-08 so macOS CI runs (billing had blocked it)
 - [x] Auto pick is compute-budgeted: photo net up to 1 MP then "fast";
       anime net up to 4 MP then "lineart"
 - [ ] GPU backend (wgpu -> Metal) for faster on-device runs of the 23-block models
