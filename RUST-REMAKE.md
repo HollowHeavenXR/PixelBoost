@@ -42,8 +42,8 @@ Models/pbnn/       converted models (fp16 .pbnn)
       old Swift services/views, Core ML models, Lua + TinyEXR vendoring removed
 - [x] `server/` rewritten in Rust (`pb-server`), every endpoint tested against
       a scratch Postgres DB + the app's Rust client round-trip test
-- [ ] First CI build of the new app (Swift written without a local Xcode —
-      fix whatever the compiler reports)
+- [x] App builds in CI (one round of Swift fixes); released as v5.0.0
+      (PixelBoost-5.0.0-unsigned.ipa) on 2026-11-08 — not yet tried on a device
 - [x] Rust upscaler-bridge deployed on Mel 2026-11-08 (rollback image
       `music-upscaler-bridge:python-backup`, compose backup
       `docker-compose.yml.bak-pbrust-20261108`); verified with live data
