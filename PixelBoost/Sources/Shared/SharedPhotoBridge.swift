@@ -9,7 +9,7 @@ import UIKit
 /// both sides agree on the container/file name without duplicating the
 /// logic.
 enum SharedPhotoBridge {
-    private static let appGroupID = "group.com.pixelboost.shared"
+    private static var appGroupID: String { AppGroup.id }
     private static let fileName = "pending-shared-photo.jpg"
 
     private static var containerURL: URL? {

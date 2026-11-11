@@ -139,6 +139,43 @@ jobs:
           /usr/libexec/PlistBuddy -c "Merge /tmp/assetcatalog_output.plist" "$APP/Info.plist"
           echo "CFBundleIcons: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" 2>&1)"
 
+      # SideStore, AltStore, Sideloadly and other re-signing tools copy App
+      # Groups from the entitlements in the IPA's signature. An unsigned build
+      # has none, so the re-signed app and its extensions get no App Group and
+      # widgets/extensions can't share data with the app. Ad-hoc sign (no
+      # certificate needed) with only the App Group, so free Apple IDs, which
+      # can't use most other entitlements, still install it.
+      - name: Embed App Group entitlement
+        run: |
+          APP="$APP_PATH"
+          ENT=/tmp/sideload-app-groups.entitlements
+          cat > "$ENT" << 'ENT_EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.security.application-groups</key>
+              <array>
+                  <string>group.com.pixelboost.shared</string>
+              </array>
+          </dict>
+          </plist>
+          ENT_EOF
+          # Inner code first: frameworks/dylibs plain, extensions and app with the group.
+          find "$APP" \( -name '*.framework' -o -name '*.dylib' \) -prune -print | while read -r f; do
+            codesign -f -s - "$f"
+          done
+          find "$APP" -name '*.appex' -prune -print | while read -r ext; do
+            codesign -f -s - --entitlements "$ENT" "$ext"
+          done
+          codesign -f -s - --entitlements "$ENT" "$APP"
+          for b in "$APP" "$APP"/PlugIns/*.appex; do
+            [ -e "$b" ] || continue
+            codesign -d --entitlements :- "$b" 2>/dev/null | grep -q "group.com.pixelboost.shared" \
+              || { echo "App Group missing from $b"; exit 1; }
+          done
+          echo "App Group embedded in app and extensions"
+
       - name: Package IPA
         id: ipa
         run: |

@@ -10,7 +10,7 @@ struct UpscaleSnapshot: Codable {
     var totalUpscales: Int
     var lastUpdated: Date
 
-    private static let appGroupID = "group.com.pixelboost.shared"
+    private static var appGroupID: String { AppGroup.id }
     private static let jsonFileName = "widget-snapshot.json"
     private static let thumbnailFileName = "widget-last-result.jpg"
 
