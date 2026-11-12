@@ -74,6 +74,39 @@ Models/pbnn/       converted models (fp16 .pbnn)
       history, settings as a sheet, background check + "Upscale ready"
       notification.
 
+## 5.2 — photo editor (2026-11-12)
+
+- [x] `pb_core::filters`: O(1)-per-pixel box / 3-pass Gaussian blurs (any
+      radius), dilation, samplers — replaces the O(r) box blur in ops.
+- [x] Adjust gained tint, vibrance, whites, blacks, fade, clarity, texture,
+      dehaze (dark-channel prior on a small copy), film grain, light vignette
+      (`#[serde(default)]`, old JSON still parses).
+- [x] `develop`: 8-band HSL mixer, grading wheels, master + RGB curves,
+      white-balance pick.
+- [x] `mask`: file / linear / radial / luminance / colour / all, invert,
+      intersect, union, feather; `local` op applies any ops through a mask.
+- [x] `fx`: Gaussian, tilt-shift, zoom, spin, motion, lens/portrait blur
+      (invertible highlight curve so flat brights don't blow out, bilinear
+      Vogel taps), bloom, guided-filter skin smoothing, 13 effects
+      (Kuwahara oil paint via box means — low memory).
+- [x] `draw` (strokes incl. neon/highlighter, lines/arrows, boxes,
+      ellipses), `text` (ab_glyph, 5 Noto fonts, outline, shadow, box,
+      rotation), `compose` (overlay + 12 blend modes, frames, perspective).
+- [x] `presets`: 12 built-ins; pb-ffi `PresetStore` (user presets JSON,
+      strips file-based ops), histogram, eyedroppers, thumbnails, export
+      (JPEG / PNG / WebP / 16-bit TIFF, long-side limit).
+- [x] CLI `pixelboost edit <in> <out> <json|@file|preset:id>`, `presets`.
+- [x] Swift: 27 tools in 7 groups, on-canvas handles, histogram, compare,
+      pinch-zoom, timeline history with jump-to, copy/paste edits, export
+      sheet.
+- [x] CI: build + release IPAs ad-hoc signed with the App Group
+      (`scripts/sign-adhoc.sh`), verified before publishing and after
+      download (`scripts/verify-signed.sh`).
+- Timings (debug-opt2 build, this PC, 4224x2458 -> 1280 preview): adjust
+  all sliders 803 ms / 61 ms, HSL 153/11, grade 95/6, local 615/45,
+  tilt-shift 1249/69, lens 459/83, zoom 1573/137, oil 451/40, text 361/19,
+  draw 109/8, perspective 363/25, Cinematic preset 667/36.
+
 ## Bench numbers (26 gallery images, 256px GT crop -> 64px -> 4x)
 
 Final settings (`pixelboost eval testimages/src OUT --crop 256`):

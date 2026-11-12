@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub mod editor;
 pub mod history;
 pub mod server;
 
@@ -140,7 +141,7 @@ fn to_rgba(img: &Image) -> RgbaImage {
     RgbaImage { width: img.w as u32, height: img.h as u32, rgba: img.to_rgba8() }
 }
 
-fn from_rgba(r: &RgbaImage) -> Result<Image, PbError> {
+pub(crate) fn from_rgba(r: &RgbaImage) -> Result<Image, PbError> {
     let (w, h) = (r.width as usize, r.height as usize);
     if r.rgba.len() != w * h * 4 {
         return Err(PbError::from(format!("rgba buffer is {} bytes, expected {}", r.rgba.len(), w * h * 4)));

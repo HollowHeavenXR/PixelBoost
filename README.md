@@ -22,15 +22,19 @@ rust/
                      runner (every source pixel goes through the network,
                      identical tiles run once), self-ensemble, fidelity
                      (guided back-projection + smooth halo guard), halo-free
-                     detail boost, Auto model pick, metrics, editing tools
+                     detail boost, Auto model pick, metrics, and the photo
+                     editor (edit, develop, mask, fx, draw, text, compose,
+                     presets, filters)
   crates/pb-ffi      PixelBoostCore Swift module (UniFFI): upscale with live
-                     tile previews + cancel, editing ops, history store,
-                     server client
+                     tile previews + cancel, editing ops, presets, histogram,
+                     eyedroppers, export, history store, server client
   crates/pb-cli      `pixelboost` CLI: convert, upscale, raw, bench, eval, classify
   crates/pb-server   upscaler-bridge server (axum + sqlx, see server/README.md)
 Models/pbnn/         the bundled networks (.pbnn)
 PixelBoost/          SwiftUI app shell (no image processing)
 scripts/build-core.sh  builds RustCore/PixelBoostCore.xcframework for iOS
+scripts/sign-adhoc.sh  ad-hoc signs the .app + extensions with the App Group
+scripts/verify-signed.sh  CI check: every part signed and carries the App Group
 ```
 
 ## The upscaler
@@ -59,15 +63,46 @@ Measured on 26 gallery images (ground-truth crops shrunk 4x and restored,
 SSIM and edge similarity, and the fidelity stage adds ~+0.8–1.6 dB over the
 raw network output. See `RUST-REMAKE.md` for the numbers.
 
-## Editing tools (all Rust, via one JSON op dispatcher — `pb_core::ops`)
+## The photo editor (5.2) — all Rust, via one JSON op dispatcher (`pb_core::ops`)
 
-Auto enhance, Adjust (exposure, brightness, contrast, saturation, warmth,
-highlights, shadows, vignette, 5-point monotone curve), 13 Looks, `.cube`
-LUTs, Selective (brush-masked adjustments), Restore (edge-preserving
-denoise, halo-free sharpen), Heal (pyramid inpainting), Clone stamp, Crop /
-rotate / flip / straighten, Cutout (subject mask from Vision, compositing +
-touch-up + backgrounds in Rust), Pixel Art (k-means palette, ordered
-dither, outline), Seamless texture, Normal map, AO multiply, Depth fog.
+The Edit mode is a full photo editor, not just an upscaler. Every tool
+previews live on a 1280px copy (6–140 ms per change on a laptop CPU) and is
+applied at full resolution; positions and sizes are normalised, so the
+preview matches the export.
+
+- **Presets & looks** — 12 built-in presets (Clean Pop, Teal & Orange,
+  Moody Film, Cinematic, B&W Contrast, Vintage...) with live thumbnails and
+  an amount slider; save your own edits as presets; copy / paste edits
+  between photos; 13 Looks; `.cube` LUTs.
+- **Light & colour** — exposure, brightness, contrast, highlights, shadows,
+  whites, blacks; temperature, tint (with a white-balance eyedropper),
+  vibrance, saturation; clarity, texture, dehaze, vignette (dark or light),
+  fade, film grain; master + R/G/B tone curves; 8-band HSL colour mixer;
+  colour-grading wheels (shadows / midtones / highlights / global, balance).
+- **Local adjustments** — brush, linear gradient and radial masks with
+  on-canvas handles (invert / affect outside); masks can also be luminance
+  or colour ranges and combinations (`pb_core::mask`).
+- **Retouch** — heal (inpainting), clone stamp, skin smoothing (guided
+  filter, whole photo or painted), denoise + halo-free sharpen.
+- **Geometry** — crop with 11 aspect ratios, rotate, flip, straighten,
+  perspective (keystone) correction with a grid.
+- **Blur** — soft (Gaussian), portrait (subject stays sharp, lens blur with
+  bokeh highlights behind it), lens, tilt-shift, zoom, spin, motion.
+- **Effects** — glow, chromatic aberration, halftone, duotone, posterize,
+  sketch, glitch, oil paint (Kuwahara), mosaic, invert, solarize,
+  threshold, emboss, light leak.
+- **Create** — text (5 bundled Noto fonts, outline, shadow, background box,
+  rotation, letter spacing), drawing (pen, marker, highlighter, neon,
+  lines, arrows, boxes, ellipses), image layers / stickers / double
+  exposure with 12 blend modes, frames (border, polaroid, film, card,
+  fit-to-ratio, rounded corners), cutout with backgrounds, pixel art,
+  seamless textures, normal maps, AO and depth fog.
+- **Workflow** — histogram with clipping warnings, press-and-hold
+  before/after, pinch-zoom, full edit history (jump to any step), export to
+  JPEG (quality) / PNG / WebP / 16-bit TIFF at original or reduced size.
+
+Try any op from the CLI: `pixelboost edit in.jpg out.jpg '{"op":"hsl","sat":[0,0,0,-1,0,0,0,0]}'`
+or `pixelboost edit in.jpg out.jpg preset:cinematic`.
 
 ## Build
 

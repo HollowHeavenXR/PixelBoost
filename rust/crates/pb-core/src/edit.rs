@@ -40,6 +40,7 @@ pub fn linear_to_srgb(v: f32) -> f32 {
 // ------------------------------------------------------------ adjustments
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Adjustments {
     /// Additive, -1..1.
     pub brightness: f32,
@@ -58,11 +59,49 @@ pub struct Adjustments {
     pub curve: [f32; 5],
     /// 0..1.
     pub vignette: f32,
+    /// Green (-1) .. magenta (1), in linear light.
+    pub tint: f32,
+    /// Saturation boost that spares already-saturated colours and skin, -1..1.
+    pub vibrance: f32,
+    /// White / black points, -1..1 (positive = brighter whites / lifted blacks).
+    pub whites: f32,
+    pub blacks: f32,
+    /// Matte fade: lifts blacks and softens contrast, 0..1.
+    pub fade: f32,
+    /// Mid-frequency local contrast, -1..1 (negative softens).
+    pub clarity: f32,
+    /// Fine-detail local contrast, -1..1.
+    pub texture: f32,
+    /// Remove (positive) or add (negative) haze, -1..1.
+    pub dehaze: f32,
+    /// Film grain amount 0..1 and size 0..1.
+    pub grain: f32,
+    pub grain_size: f32,
 }
 
 impl Default for Adjustments {
     fn default() -> Self {
-        Adjustments { brightness: 0.0, contrast: 1.0, saturation: 1.0, exposure: 0.0, warmth: 0.0, highlights: 0.0, shadows: 0.0, curve: [0.0, 0.25, 0.5, 0.75, 1.0], vignette: 0.0 }
+        Adjustments {
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            exposure: 0.0,
+            warmth: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            curve: [0.0, 0.25, 0.5, 0.75, 1.0],
+            vignette: 0.0,
+            tint: 0.0,
+            vibrance: 0.0,
+            whites: 0.0,
+            blacks: 0.0,
+            fade: 0.0,
+            clarity: 0.0,
+            texture: 0.0,
+            dehaze: 0.0,
+            grain: 0.0,
+            grain_size: 0.3,
+        }
     }
 }
 
@@ -107,16 +146,33 @@ pub fn adjust(img: &mut Image, a: &Adjustments) {
     if *a == Adjustments::default() {
         return;
     }
+    if a.dehaze.abs() > 1e-3 {
+        crate::develop::dehaze(img, a.dehaze);
+    }
     let lut = if a.curve != Adjustments::default().curve { Some(curve_lut(&a.curve, 1024)) } else { None };
     let gain = 2f32.powf(a.exposure);
     let (w, h) = (img.w as f32, img.h as f32);
     let width = img.w;
-    let warm = [1.0 + 0.10 * a.warmth, 1.0 + 0.02 * a.warmth, 1.0 - 0.12 * a.warmth];
+    let warm = [
+        (1.0 + 0.10 * a.warmth) * (1.0 + 0.04 * a.tint),
+        (1.0 + 0.02 * a.warmth) * (1.0 - 0.08 * a.tint),
+        (1.0 - 0.12 * a.warmth) * (1.0 + 0.04 * a.tint),
+    ];
+    let linear = a.exposure != 0.0 || a.warmth != 0.0 || a.tint != 0.0;
+    // White / black points as a linear remap of the encoded values.
+    let lo = -a.blacks * 0.12;
+    let hi = 1.0 - a.whites * 0.12;
+    let levels = a.whites != 0.0 || a.blacks != 0.0;
     img.px.par_iter_mut().enumerate().for_each(|(i, p)| {
         let mut c = [p[0], p[1], p[2]];
-        if a.exposure != 0.0 || a.warmth != 0.0 {
+        if linear {
             for k in 0..3 {
                 c[k] = linear_to_srgb(srgb_to_linear(c[k]) * gain * warm[k]);
+            }
+        }
+        if levels {
+            for v in &mut c {
+                *v = (*v - lo) / (hi - lo);
             }
         }
         if a.highlights != 0.0 || a.shadows != 0.0 {
@@ -130,6 +186,18 @@ pub fn adjust(img: &mut Image, a: &Adjustments) {
         }
         for v in &mut c {
             *v = (*v + a.brightness - 0.5) * a.contrast + 0.5;
+        }
+        if a.vibrance != 0.0 {
+            let mx = c[0].max(c[1]).max(c[2]);
+            let mn = c[0].min(c[1]).min(c[2]);
+            let sat = if mx > 1e-4 { (mx - mn) / mx } else { 0.0 };
+            // Skin (red > green > blue, moderate saturation) gets half.
+            let skin = if c[0] > c[1] && c[1] > c[2] && sat < 0.6 { 0.5 } else { 1.0 };
+            let k = 1.0 + a.vibrance * (1.0 - sat) * skin * if a.vibrance > 0.0 { 1.2 } else { 1.0 };
+            let l = luma3(c);
+            for v in &mut c {
+                *v = l + (*v - l) * k;
+            }
         }
         if a.saturation != 1.0 {
             let l = luma3(c);
@@ -145,18 +213,37 @@ pub fn adjust(img: &mut Image, a: &Adjustments) {
                 *v = lut[i0] * (1.0 - f) + lut[(i0 + 1).min(1023)] * f;
             }
         }
-        if a.vignette > 0.0 {
+        if a.fade > 0.0 {
+            for v in &mut c {
+                *v = a.fade * 0.14 + v.clamp(0.0, 1.0) * (1.0 - a.fade * 0.22);
+            }
+        }
+        if a.vignette != 0.0 {
             let (x, y) = ((i % width) as f32 / w - 0.5, (i / width) as f32 / h - 0.5);
-            let r = (x * x + y * y).sqrt() / 0.7071;
-            let v = 1.0 - a.vignette * (r * r).powf(1.5).min(1.0);
-            for c in &mut c {
-                *c *= v;
+            let r = (x * x + y * y).sqrt() / std::f32::consts::FRAC_1_SQRT_2;
+            let f = (r * r).powf(1.5).min(1.0);
+            if a.vignette > 0.0 {
+                let v = 1.0 - a.vignette * f;
+                for c in &mut c {
+                    *c *= v;
+                }
+            } else {
+                // Negative = white vignette.
+                for c in &mut c {
+                    *c += (1.0 - *c) * (-a.vignette) * f;
+                }
             }
         }
         p[0] = c[0].clamp(0.0, 1.0);
         p[1] = c[1].clamp(0.0, 1.0);
         p[2] = c[2].clamp(0.0, 1.0);
     });
+    if a.clarity.abs() > 1e-3 || a.texture.abs() > 1e-3 {
+        crate::develop::local_contrast(img, a.clarity, a.texture);
+    }
+    if a.grain > 1e-3 {
+        crate::develop::grain(img, a.grain, a.grain_size);
+    }
 }
 
 // ------------------------------------------------------------ filters

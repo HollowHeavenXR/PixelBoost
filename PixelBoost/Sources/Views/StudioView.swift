@@ -138,7 +138,7 @@ struct StudioView: View {
                 }
                 .buttonStyle(.plain)
                 action("Edit", "slider.horizontal.3") {
-                    app.commit(URL(fileURLWithPath: o.outputPath))
+                    app.commit(URL(fileURLWithPath: o.outputPath), step: "Upscale \(o.width)×\(o.height)")
                     app.mode = .edit
                 }
                 action("Again", "arrow.counterclockwise") { job.reset() }

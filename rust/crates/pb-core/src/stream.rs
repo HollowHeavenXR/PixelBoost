@@ -64,6 +64,15 @@ impl Rgba8 {
                     .write_image(&rgb, self.w as u32, self.h as u32, image::ExtendedColorType::Rgb8)
                     .map_err(|e| e.to_string())?;
             }
+            Format::Tiff => {
+                use image::ImageEncoder;
+                let mut buf = Vec::new();
+                image::codecs::tiff::TiffEncoder::new(std::io::Cursor::new(&mut buf))
+                    .write_image(&self.data, self.w as u32, self.h as u32, image::ExtendedColorType::Rgba8)
+                    .map_err(|e| e.to_string())?;
+                use std::io::Write;
+                wtr.write_all(&buf).map_err(|e| e.to_string())?;
+            }
             Format::Webp => {
                 use image::ImageEncoder;
                 image::codecs::webp::WebPEncoder::new_lossless(&mut wtr)

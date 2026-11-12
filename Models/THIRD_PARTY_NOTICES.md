@@ -47,3 +47,10 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+## Noto fonts (rust/crates/pb-core/fonts)
+
+The text tool bundles NotoSans-Regular, NotoSans-Black, NotoSerif-Bold,
+NotoSerifDisplay-BlackItalic and NotoSansMono-Bold from the Noto project
+(Google), licensed under the SIL Open Font License 1.1 — full text in
+`rust/crates/pb-core/fonts/OFL.txt`.

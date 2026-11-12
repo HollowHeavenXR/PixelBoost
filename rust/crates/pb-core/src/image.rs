@@ -16,6 +16,7 @@ pub enum Format {
     Png,
     Jpeg,
     Webp,
+    Tiff,
 }
 
 impl Format {
@@ -25,6 +26,8 @@ impl Format {
             Format::Jpeg
         } else if l.ends_with(".webp") {
             Format::Webp
+        } else if l.ends_with(".tif") || l.ends_with(".tiff") {
+            Format::Tiff
         } else {
             Format::Png
         }
@@ -106,6 +109,18 @@ impl Image {
                 image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality).write_image(&rgb, w, h, image::ExtendedColorType::Rgb8).map_err(|e| e.to_string())?
             }
             Format::Webp => image::codecs::webp::WebPEncoder::new_lossless(&mut out).write_image(&buf, w, h, ct).map_err(|e| e.to_string())?,
+            Format::Tiff => {
+                // 16-bit TIFF keeps the edit's full precision.
+                let n = if alpha { 4 } else { 3 };
+                let mut words: Vec<u8> = Vec::with_capacity(self.w * self.h * n * 2);
+                for p in &self.px {
+                    for v in &p[..n] {
+                        words.extend_from_slice(&((v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16).to_ne_bytes());
+                    }
+                }
+                let ct16 = if alpha { image::ExtendedColorType::Rgba16 } else { image::ExtendedColorType::Rgb16 };
+                image::codecs::tiff::TiffEncoder::new(std::io::Cursor::new(&mut out)).write_image(&words, w, h, ct16).map_err(|e| e.to_string())?
+            }
         }
         Ok(out)
     }

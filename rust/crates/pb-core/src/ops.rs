@@ -1,8 +1,14 @@
 //! One JSON-described operation per editing tool, so the app (and the
 //! CLI) drive every tool through a single entry point.
 
+use crate::compose;
+use crate::develop::{self, Curves, Grade, Hsl};
+use crate::draw::{self, Mark};
 use crate::edit::{self, Adjustments};
+use crate::fx;
 use crate::image::Image;
+use crate::mask::{self, MaskSpec};
+use crate::text::{self, TextSpec};
 use crate::resample::{resize, Filter};
 use serde::Deserialize;
 
@@ -43,6 +49,185 @@ pub enum Op {
     /// Restore (white) or erase (black) parts of a cutout from the original.
     TouchUp { original: String, mask: String, restore: bool },
     Chain { ops: Vec<Op> },
+
+    // ---- photo editor tools (5.2)
+    /// HSL colour mixer.
+    Hsl(Hsl),
+    /// Colour grading wheels.
+    Grade(Grade),
+    /// Master + per-channel tone curves.
+    Curves(Curves),
+    /// Apply `ops` through a gradient / radial / range / painted mask.
+    Local {
+        mask: MaskSpec,
+        ops: Vec<Op>,
+        #[serde(default = "full")]
+        amount: f32,
+    },
+    /// Gaussian blur, `radius` as a fraction of the width.
+    Blur { radius: f32 },
+    TiltShift {
+        #[serde(default = "half")]
+        y: f32,
+        #[serde(default)]
+        angle: f32,
+        #[serde(default = "fifth")]
+        band: f32,
+        #[serde(default = "fifth")]
+        feather: f32,
+        #[serde(default = "blur_r")]
+        radius: f32,
+    },
+    ZoomBlur {
+        #[serde(default = "half")]
+        cx: f32,
+        #[serde(default = "half")]
+        cy: f32,
+        amount: f32,
+    },
+    SpinBlur {
+        #[serde(default = "half")]
+        cx: f32,
+        #[serde(default = "half")]
+        cy: f32,
+        degrees: f32,
+    },
+    MotionBlur { angle: f32, distance: f32 },
+    /// Bokeh blur; `keep` marks what stays sharp (portrait mode).
+    LensBlur {
+        #[serde(default = "blur_r")]
+        radius: f32,
+        #[serde(default = "half")]
+        bokeh: f32,
+        #[serde(default)]
+        keep: Option<MaskSpec>,
+    },
+    Bloom {
+        #[serde(default = "half")]
+        amount: f32,
+        #[serde(default = "blur_r")]
+        radius: f32,
+        #[serde(default = "threshold")]
+        threshold: f32,
+    },
+    /// Creative effect by name (see `fx::EFFECTS`).
+    Effect {
+        name: String,
+        #[serde(default = "full")]
+        amount: f32,
+        #[serde(default = "half")]
+        size: f32,
+        #[serde(default = "fx_colors")]
+        colors: [[f32; 3]; 2],
+    },
+    /// Edge-preserving smoothing (skin retouch).
+    Smooth {
+        amount: f32,
+        #[serde(default = "smooth_r")]
+        radius: f32,
+    },
+    /// Strokes, lines, arrows, shapes.
+    Draw { marks: Vec<Mark> },
+    Text(TextSpec),
+    /// Image layer (sticker, logo, double exposure) with a blend mode.
+    Overlay {
+        path: String,
+        #[serde(default = "half")]
+        x: f32,
+        #[serde(default = "half")]
+        y: f32,
+        #[serde(default = "third")]
+        w: f32,
+        #[serde(default)]
+        rotation: f32,
+        #[serde(default = "full")]
+        opacity: f32,
+        #[serde(default = "normal")]
+        blend: String,
+        #[serde(default)]
+        fit: Option<String>,
+    },
+    /// Border / polaroid / film / pad-to-ratio / rounded / shadow card.
+    Frame {
+        style: String,
+        #[serde(default = "frame_w")]
+        width: f32,
+        #[serde(default = "white4")]
+        color: [f32; 4],
+        #[serde(default)]
+        ratio: f32,
+        #[serde(default = "frame_w")]
+        radius: f32,
+    },
+    /// Keystone correction, each -1..1.
+    Perspective {
+        #[serde(default)]
+        vertical: f32,
+        #[serde(default)]
+        horizontal: f32,
+    },
+}
+
+fn fifth() -> f32 {
+    0.2
+}
+fn third() -> f32 {
+    0.33
+}
+fn blur_r() -> f32 {
+    0.02
+}
+fn smooth_r() -> f32 {
+    0.008
+}
+fn threshold() -> f32 {
+    0.7
+}
+fn frame_w() -> f32 {
+    0.05
+}
+fn normal() -> String {
+    "normal".into()
+}
+fn white4() -> [f32; 4] {
+    [1.0, 1.0, 1.0, 1.0]
+}
+fn fx_colors() -> [[f32; 3]; 2] {
+    [[0.10, 0.08, 0.25], [1.0, 0.82, 0.55]]
+}
+
+impl Op {
+    /// True when the op reads files (masks, LUTs, overlays...), so it can't
+    /// be saved in a preset or replayed on another photo.
+    pub fn uses_files(&self) -> bool {
+        match self {
+            Op::Lut { .. }
+            | Op::AoBlend { .. }
+            | Op::DepthFog { .. }
+            | Op::Inpaint { .. }
+            | Op::Masked { .. }
+            | Op::Background { .. }
+            | Op::BlurredBackground { .. }
+            | Op::MaskAlpha { .. }
+            | Op::TouchUp { .. }
+            | Op::Overlay { .. }
+            | Op::CloneStamp { .. } => true,
+            Op::Chain { ops } => ops.iter().any(|o| o.uses_files()),
+            Op::Local { mask, ops, .. } => mask.uses_files() || ops.iter().any(|o| o.uses_files()),
+            Op::LensBlur { keep: Some(m), .. } => m.uses_files(),
+            _ => false,
+        }
+    }
+
+    /// True when the op changes the image size (or crops/rotates), so
+    /// masks recorded after it won't line up if it's toggled.
+    pub fn changes_geometry(&self) -> bool {
+        match self {
+            Op::Rotate { .. } | Op::Crop { .. } | Op::Straighten { .. } | Op::Resize { .. } | Op::Frame { .. } | Op::Perspective { .. } | Op::Flip { .. } => true,
+            Op::Chain { ops } => ops.iter().any(|o| o.changes_geometry()),
+            _ => false,
+        }
+    }
 }
 
 fn full() -> f32 {
@@ -81,40 +266,6 @@ fn over(fg: &Image, bg: &Image) -> Image {
         o[3] = a + b[3] * (1.0 - a);
     }
     out
-}
-
-fn box_blur(img: &Image, r: usize) -> Image {
-    // Three box passes approximate a Gaussian.
-    let mut cur = img.clone();
-    for _ in 0..3 {
-        let f = (2 * r + 1) as f32;
-        let mut tmp = cur.clone();
-        for y in 0..cur.h {
-            for x in 0..cur.w {
-                let mut acc = [0.0f32; 4];
-                for d in -(r as isize)..=r as isize {
-                    let p = cur.at_clamped(x as isize + d, y as isize);
-                    for c in 0..4 {
-                        acc[c] += p[c];
-                    }
-                }
-                tmp.px[y * cur.w + x] = acc.map(|v| v / f);
-            }
-        }
-        for y in 0..cur.h {
-            for x in 0..cur.w {
-                let mut acc = [0.0f32; 4];
-                for d in -(r as isize)..=r as isize {
-                    let p = tmp.at_clamped(x as isize, y as isize + d);
-                    for c in 0..4 {
-                        acc[c] += p[c];
-                    }
-                }
-                cur.px[y * cur.w + x] = acc.map(|v| v / f);
-            }
-        }
-    }
-    cur
 }
 
 pub fn apply(img: &Image, op: &Op) -> Result<Image, String> {
@@ -178,7 +329,7 @@ pub fn apply(img: &Image, op: &Op) -> Result<Image, String> {
             let src = Image::open(path)?;
             let small_f = 4usize;
             let small = resize(&src, (src.w / small_f).max(1), (src.h / small_f).max(1), Filter::Box);
-            let b = box_blur(&small, ((*radius as usize) / small_f).max(1));
+            let b = crate::filters::gauss(&small, (*radius / small_f as f32).max(1.0));
             out = over(img, &resize(&b, img.w, img.h, Filter::CatmullRom));
         }
         Op::MaskAlpha { mask } => {
@@ -206,6 +357,46 @@ pub fn apply(img: &Image, op: &Op) -> Result<Image, String> {
                 out = apply(&out, o)?;
             }
         }
+        Op::Hsl(p) => develop::hsl(&mut out, p),
+        Op::Grade(g) => develop::grade(&mut out, g),
+        Op::Curves(c) => develop::curves(&mut out, c),
+        Op::Local { mask: spec, ops, amount } => {
+            let mut e = img.clone();
+            for o in ops {
+                e = apply(&e, o)?;
+            }
+            if (e.w, e.h) != (img.w, img.h) {
+                return Err("local adjustments must keep the image size".into());
+            }
+            let mut m = mask::render(spec, img)?;
+            if *amount < 1.0 {
+                let a = amount.clamp(0.0, 1.0);
+                m.iter_mut().for_each(|v| *v *= a);
+            }
+            out = edit::masked_blend(img, &e, &m);
+        }
+        Op::Blur { radius } => out = fx::blur(img, *radius),
+        Op::TiltShift { y, angle, band, feather, radius } => out = fx::tilt_shift(img, *y, *angle, *band, *feather, *radius),
+        Op::ZoomBlur { cx, cy, amount } => out = fx::zoom_blur(img, *cx, *cy, *amount),
+        Op::SpinBlur { cx, cy, degrees } => out = fx::spin_blur(img, *cx, *cy, *degrees),
+        Op::MotionBlur { angle, distance } => out = fx::motion_blur(img, *angle, *distance),
+        Op::LensBlur { radius, bokeh, keep } => {
+            let k = match keep {
+                Some(spec) => Some(mask::render(spec, img)?),
+                None => None,
+            };
+            out = fx::lens_blur(img, *radius, *bokeh, k.as_deref())
+        }
+        Op::Bloom { amount, radius, threshold } => out = fx::bloom(img, *amount, *radius, *threshold),
+        Op::Effect { name, amount, size, colors } => out = fx::effect(img, name, *amount, *size, *colors)?,
+        Op::Smooth { amount, radius } => out = fx::smooth(img, *amount, *radius),
+        Op::Draw { marks } => draw::draw(&mut out, marks),
+        Op::Text(t) => text::draw_text(&mut out, t),
+        Op::Overlay { path, x, y, w, rotation, opacity, blend, fit } => {
+            out = compose::overlay(img, &Image::open(path)?, *x, *y, *w, *rotation, *opacity, blend, fit.as_deref())
+        }
+        Op::Frame { style, width, color, ratio, radius } => out = compose::frame(img, style, *width, *color, *ratio, *radius)?,
+        Op::Perspective { vertical, horizontal } => out = compose::perspective(img, *vertical, *horizontal),
     }
     Ok(out)
 }
@@ -232,10 +423,36 @@ mod tests {
             r#"{"op":"straighten","degrees":5}"#,
             r#"{"op":"pixel_art","cell":2,"colors":4,"dither":true,"outline":true}"#,
             r#"{"op":"chain","ops":[{"op":"sharpen","amount":0.5},{"op":"denoise","amount":0.5},{"op":"seamless"},{"op":"normal_map"}]}"#,
+            r#"{"op":"adjust","tint":0.3,"vibrance":0.5,"whites":0.2,"blacks":-0.2,"fade":0.3,"clarity":0.5,"texture":0.4,"dehaze":0.5,"grain":0.4}"#,
+            r#"{"op":"adjust","exposure":0.5}"#,
+            r#"{"op":"hsl","hue":[0.2,0,0,0,0,0,0,0],"sat":[0,0,0,-1,0,0,0,0]}"#,
+            r#"{"op":"grade","shadows":{"hue":220,"sat":0.4},"highlights":{"hue":40,"sat":0.3,"lum":0.1}}"#,
+            r#"{"op":"curves","master":[0,0.2,0.5,0.8,1],"blue":[0.1,0.5,0.9]}"#,
+            r#"{"op":"local","mask":{"kind":"linear","x0":0.5,"y0":0,"x1":0.5,"y1":0.6},"ops":[{"op":"adjust","exposure":-1}]}"#,
+            r#"{"op":"local","mask":{"kind":"radial","cx":0.5,"cy":0.5,"rx":0.3,"ry":0.3},"ops":[{"op":"effect","name":"mosaic"}],"amount":0.5}"#,
+            r#"{"op":"blur","radius":0.05}"#,
+            r#"{"op":"tilt_shift"}"#,
+            r#"{"op":"zoom_blur","amount":0.4}"#,
+            r#"{"op":"spin_blur","degrees":15}"#,
+            r#"{"op":"motion_blur","angle":20,"distance":0.1}"#,
+            r#"{"op":"lens_blur","keep":{"kind":"radial","cx":0.5,"cy":0.5,"rx":0.2,"ry":0.3}}"#,
+            r#"{"op":"bloom"}"#,
+            r#"{"op":"effect","name":"oil","size":0.3}"#,
+            r#"{"op":"smooth","amount":0.6}"#,
+            r#"{"op":"draw","marks":[{"kind":"stroke","points":[[0.1,0.1],[0.9,0.9]],"width":0.05,"color":[1,1,0,1],"style":"highlighter"}]}"#,
+            r#"{"op":"text","text":"Hello","x":0.5,"y":0.5,"size":0.3,"font":"heavy","outline":0.08}"#,
+            r#"{"op":"frame","style":"polaroid"}"#,
+            r#"{"op":"perspective","vertical":0.5}"#,
         ] {
             let op = parse(j).unwrap();
             let o = apply(&img, &op).unwrap();
             assert!(o.w > 0 && o.h > 0 && o.px.iter().all(|p| p.iter().all(|v| v.is_finite())), "{j}");
         }
+    }
+    #[test]
+    fn portability() {
+        assert!(!parse(r#"{"op":"chain","ops":[{"op":"adjust"},{"op":"hsl"}]}"#).unwrap().uses_files());
+        assert!(parse(r#"{"op":"local","mask":{"kind":"file","path":"/x.png"},"ops":[]}"#).unwrap().uses_files());
+        assert!(parse(r#"{"op":"crop","x":0,"y":0,"w":0.5,"h":0.5}"#).unwrap().changes_geometry());
     }
 }

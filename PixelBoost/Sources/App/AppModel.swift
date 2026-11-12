@@ -17,43 +17,107 @@ final class AppModel: ObservableObject {
     @Published private(set) var preview: UIImage?
     @Published private(set) var info: ImageInfo?
     @Published var message: String?
+    @Published var showExport = false
+    @Published var showHistory = false
 
-    private var undoStack: [URL] = []
-    private var redoStack: [URL] = []
+    /// Every version of the photo: timeline[0] is the import, step i made
+    /// timeline[i + 1]. `index` is the version on screen.
+    private var timeline: [URL] = []
+    private var stepList: [EditStep] = []
+    @Published private(set) var index = 0
     /// The photo as first imported (Cutout touch-up, compare).
     private(set) var original: URL?
+    /// Display-size preview of the original (press-and-hold compare).
+    @Published private(set) var originalPreview: UIImage?
 
     let models: [ModelEntry] = Core.engine.models()
 
-    var canUndo: Bool { !undoStack.isEmpty }
-    var canRedo: Bool { !redoStack.isEmpty }
+    var canUndo: Bool { index > 0 }
+    var canRedo: Bool { index < timeline.count - 1 }
+    /// Edits that made the current version (oldest first).
+    var steps: [EditStep] { Array(stepList.prefix(index)) }
+    /// Undone edits that redo would bring back.
+    var undone: [EditStep] { Array(stepList.dropFirst(index)) }
 
     func setPhoto(_ url: URL) {
-        undoStack.removeAll()
-        redoStack.removeAll()
+        timeline = [url]
+        stepList = []
+        index = 0
         original = url
+        originalPreview = nil
+        show(url)
+        Task.detached(priority: .utility) {
+            let img = (try? Core.engine.loadPreview(path: url.path, maxSide: 2048))?.uiImage
+            await MainActor.run { if self.original == url { self.originalPreview = img } }
+        }
+    }
+
+    /// Replace the working image with an edited version (undoable). `op`
+    /// is the edit's JSON when it can be replayed (copy / presets).
+    func commit(_ url: URL, step: String = "Edit", op: String? = nil) {
+        if timeline.isEmpty {
+            setPhoto(url)
+            return
+        }
+        timeline.removeSubrange((index + 1)...)
+        stepList.removeSubrange(index...)
+        timeline.append(url)
+        stepList.append(EditStep(title: step, op: op))
+        index = timeline.count - 1
+        if timeline.count > 61 {
+            timeline.removeFirst()
+            stepList.removeFirst()
+            index -= 1
+        }
         show(url)
     }
 
-    /// Replace the working image with an edited version (undoable).
-    func commit(_ url: URL) {
-        if let c = current { undoStack.append(c) }
-        if undoStack.count > 30 { undoStack.removeFirst() }
-        redoStack.removeAll()
-        show(url)
+    func undo() { jump(to: index - 1) }
+    func redo() { jump(to: index + 1) }
+
+    /// Show any version from the history.
+    func jump(to i: Int) {
+        guard i >= 0, i < timeline.count, i != index else { return }
+        index = i
+        show(timeline[i])
     }
 
-    func undo() {
-        guard let prev = undoStack.popLast(), let c = current else { return }
-        redoStack.append(c)
-        show(prev)
+    /// The replayable edits so far as one chain op (nil when none).
+    var recipe: String? {
+        let ops = steps.compactMap { $0.op }.filter { (try? Core.engine.opInfo(opJson: $0))?.portable == true }
+        return ops.isEmpty ? nil : "{\"op\":\"chain\",\"ops\":[" + ops.joined(separator: ",") + "]}"
     }
 
-    func redo() {
-        guard let next = redoStack.popLast(), let c = current else { return }
-        undoStack.append(c)
-        show(next)
+    /// Copied edits, kept across photos and launches.
+    var copiedEdits: String? {
+        get { UserDefaults.standard.string(forKey: "pb.copiedEdits") }
+        set { UserDefaults.standard.set(newValue, forKey: "pb.copiedEdits"); objectWillChange.send() }
     }
+
+    func copyEdits() {
+        guard let r = recipe else { message = "No edits that can be copied yet (painted masks, layers and LUTs stay with this photo)."; return }
+        copiedEdits = r
+        flash("Edits copied")
+    }
+
+    /// Run an op on the full-size current image and commit it.
+    func run(_ op: String, step: String) {
+        guard let src = current else { return }
+        let out = Core.newFile("png")
+        busy = true
+        Task.detached(priority: .userInitiated) {
+            let r = Result { try Core.engine.editFile(inputPath: src.path, outputPath: out.path, opJson: op) }
+            await MainActor.run {
+                self.busy = false
+                switch r {
+                case .success: self.commit(out, step: step, op: op)
+                case .failure(let e): self.message = describe(e)
+                }
+            }
+        }
+    }
+
+    @Published var busy = false
 
     private func show(_ url: URL) {
         current = url
@@ -105,4 +169,10 @@ final class AppModel: ObservableObject {
         let d = (try? JSONSerialization.data(withJSONObject: detail)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
         Core.server.logAction(action: action, detailJson: d)
     }
+}
+
+struct EditStep: Identifiable, Equatable {
+    let id = UUID()
+    let title: String
+    let op: String?
 }

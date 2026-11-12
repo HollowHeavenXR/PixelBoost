@@ -126,10 +126,13 @@ jobs:
           /usr/libexec/PlistBuddy -c "Merge /tmp/assetcatalog_output.plist" "$APP/Info.plist"
           echo "CFBundleIcons: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" 2>&1)"
 
-      - name: Package IPA (unsigned)
+      - name: Sign ad-hoc with the App Group and verify
+        run: scripts/sign-adhoc.sh "$APP_PATH"
+
+      - name: Package IPA
         run: |
           MARKETING_VERSION=$(grep 'MARKETING_VERSION' project.yml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          IPA_NAME="PixelBoost-v${MARKETING_VERSION}-unsigned.ipa"
+          IPA_NAME="PixelBoost-v${MARKETING_VERSION}-build${{ github.run_number }}.ipa"
           PAYLOAD_DIR="build/Payload/Payload"
           mkdir -p "$PAYLOAD_DIR"
           cp -R "$APP_PATH" "$PAYLOAD_DIR/"

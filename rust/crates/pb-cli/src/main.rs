@@ -17,7 +17,9 @@ fn usage() -> ! {
   raw <model> <in> <out>               model output only, no post-processing
   bench <model> [size]                 time one forward pass
   eval <image dir> <out dir> [--models dir] [--crop n] [--list a,b] [--only ids]
-                                       degrade -> upscale -> compare with original"
+                                       degrade -> upscale -> compare with original
+  edit <in> <out> <op json | @file.json | preset:id>   run an editing op (timed)
+  presets                              list built-in presets"
     );
     std::process::exit(2)
 }
@@ -112,6 +114,28 @@ fn main() {
             Ok(())
         })(),
         "eval" if args.len() >= 3 => eval::eval_cmd(&args),
+        "edit" if args.len() >= 4 => (|| {
+            let spec = &args[3];
+            let json = if let Some(id) = spec.strip_prefix("preset:") {
+                pb_core::presets::BUILTIN.iter().find(|b| b.id == id).map(|b| b.op.to_string()).ok_or(format!("no preset {id}"))?
+            } else if let Some(f) = spec.strip_prefix('@') {
+                std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?
+            } else {
+                spec.clone()
+            };
+            let op = pb_core::ops::parse(&json)?;
+            let img = Image::open(&args[1])?;
+            let t = Instant::now();
+            let out = pb_core::ops::apply(&img, &op)?;
+            println!("{}x{} -> {}x{} in {:.0} ms", img.w, img.h, out.w, out.h, t.elapsed().as_secs_f64() * 1000.0);
+            out.save(&args[2])
+        })(),
+        "presets" => {
+            for b in pb_core::presets::BUILTIN {
+                println!("{:<16} {}", b.id, b.name);
+            }
+            Ok(())
+        }
         "classify" if args.len() >= 2 => args[1..].iter().try_for_each(|f| {
             let img = Image::open(f)?;
             let s = pb_core::classify::stats(&img);

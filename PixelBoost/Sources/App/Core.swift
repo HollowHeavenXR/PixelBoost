@@ -18,6 +18,9 @@ enum Core {
 
     static let history = HistoryStore(dir: documents.appendingPathComponent("History", isDirectory: true).path)
 
+    /// Built-in and saved presets (Rust-managed JSON in Documents/Presets).
+    static let presets = PresetStore(dir: documents.appendingPathComponent("Presets", isDirectory: true).path)
+
     static let deviceID: String = {
         let k = "pb.deviceID"
         if let v = UserDefaults.standard.string(forKey: k) { return v }

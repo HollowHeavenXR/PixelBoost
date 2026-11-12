@@ -145,42 +145,14 @@ jobs:
       # widgets/extensions can't share data with the app. Ad-hoc sign (no
       # certificate needed) with only the App Group, so free Apple IDs, which
       # can't use most other entitlements, still install it.
-      - name: Embed App Group entitlement
-        run: |
-          APP="$APP_PATH"
-          ENT=/tmp/sideload-app-groups.entitlements
-          cat > "$ENT" << 'ENT_EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>com.apple.security.application-groups</key>
-              <array>
-                  <string>group.com.pixelboost.shared</string>
-              </array>
-          </dict>
-          </plist>
-          ENT_EOF
-          # Inner code first: frameworks/dylibs plain, extensions and app with the group.
-          find "$APP" \( -name '*.framework' -o -name '*.dylib' \) -prune -print | while read -r f; do
-            codesign -f -s - "$f"
-          done
-          find "$APP" -name '*.appex' -prune -print | while read -r ext; do
-            codesign -f -s - --entitlements "$ENT" "$ext"
-          done
-          codesign -f -s - --entitlements "$ENT" "$APP"
-          for b in "$APP" "$APP"/PlugIns/*.appex; do
-            [ -e "$b" ] || continue
-            codesign -d --entitlements :- "$b" 2>/dev/null | grep -q "group.com.pixelboost.shared" \
-              || { echo "App Group missing from $b"; exit 1; }
-          done
-          echo "App Group embedded in app and extensions"
+      - name: Sign ad-hoc with the App Group and verify
+        run: scripts/sign-adhoc.sh "$APP_PATH"
 
       - name: Package IPA
         id: ipa
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          IPA_NAME="PixelBoost-${VERSION}-unsigned.ipa"
+          IPA_NAME="PixelBoost-${VERSION}.ipa"
           PAYLOAD_DIR="build/Payload/Payload"
           mkdir -p "$PAYLOAD_DIR"
           cp -R "$APP_PATH" "$PAYLOAD_DIR/"
@@ -202,9 +174,9 @@ jobs:
           RELEASE_NOTES=$(cat <<EOF
           ## PixelBoost v${VERSION}
 
-          Unsigned IPA — install with [Sideloadly](https://sideloadly.io/) or [AltStore](https://altstore.io/).
+          Ad-hoc signed IPA with the App Group embedded (app, widgets and Share extension) — install with SideStore, AltStore, Sideloadly or LiveContainer; they re-sign it with your Apple ID.
 
-          Bundles a converted Real-ESRGAN x4plus Core ML model (BSD-3-Clause) — see Models/README.md. Compiles clean in CI; actual on-device inference has not yet been verified — please test and report back.
+          PixelBoost is an AI upscaler and a full photo editor: presets, light & colour, curves, HSL colour mix, grading wheels, brush / linear / radial local adjustments, heal, clone, skin smoothing, crop & perspective, portrait / lens / tilt-shift / zoom / motion blur, creative effects, text, drawing, image layers with blend modes, frames, cutout and export to JPEG / PNG / WebP / 16-bit TIFF. Every pixel operation runs in PixelBoost's own Rust engine on the device.
           EOF
           )
 
@@ -221,6 +193,16 @@ jobs:
               --notes "$RELEASE_NOTES" \
               "build/$IPA_NAME"
           fi
+
+      - name: Download the published IPA and verify it again
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/pb-check && mkdir -p /tmp/pb-check
+          gh release download "${{ steps.version.outputs.tag }}" -p "${{ steps.ipa.outputs.ipa_name }}" -D /tmp/pb-check
+          cd /tmp/pb-check && unzip -q "${{ steps.ipa.outputs.ipa_name }}"
+          "$GITHUB_WORKSPACE/scripts/verify-signed.sh" "$(ls -d /tmp/pb-check/Payload/*.app | head -1)"
 
       # Best-effort: never fail the release over this housekeeping commit.
       - name: Commit stamped version back to main

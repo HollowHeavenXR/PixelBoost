@@ -7,6 +7,9 @@ import UIKit
 final class ToolSession: ObservableObject {
     @Published private(set) var live: UIImage?
     @Published private(set) var busy = false
+    /// Histogram of what's on screen (live preview, else the photo).
+    @Published private(set) var histogram: Histogram?
+    private var baseHistogram: Histogram?
     private(set) var base: RgbaImage?
     private var pending: String?
     private var running = false
@@ -19,9 +22,12 @@ final class ToolSession: ObservableObject {
         base = nil
         Task.detached(priority: .userInitiated) {
             let b = try? Core.engine.loadPreview(path: url.path, maxSide: 1280)
+            let h = b.map { Core.engine.histogram(image: $0) }
             await MainActor.run {
                 guard self.source == url else { return }
                 self.base = b
+                self.baseHistogram = h
+                self.histogram = h
                 if let p = self.pending { self.pending = nil; self.preview(p) }
             }
         }
@@ -30,21 +36,23 @@ final class ToolSession: ObservableObject {
     func clear() {
         live = nil
         pending = nil
+        histogram = baseHistogram
     }
 
     /// Latest-wins preview: while one render runs, only the newest request
     /// is kept.
     func preview(_ op: String?) {
-        guard let op else { live = nil; return }
+        guard let op else { live = nil; histogram = baseHistogram; return }
         guard let base else { pending = op; return }
         if running { pending = op; return }
         running = true
         Task.detached(priority: .userInitiated) {
             let out = try? Core.engine.editRgba(image: base, opJson: op)
             let img = out?.uiImage
+            let h = out.map { Core.engine.histogram(image: $0) }
             await MainActor.run {
                 self.running = false
-                if let img { self.live = img }
+                if let img { self.live = img; self.histogram = h }
                 if let next = self.pending { self.pending = nil; self.preview(next) }
             }
         }
@@ -61,7 +69,7 @@ final class ToolSession: ObservableObject {
                 switch r {
                 case .success:
                     self.live = nil
-                    app.commit(out)
+                    app.commit(out, step: name, op: op)
                     app.log("edit", ["tool": name])
                 case .failure(let e):
                     app.message = describe(e)

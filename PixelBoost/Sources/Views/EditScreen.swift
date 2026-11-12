@@ -1,22 +1,42 @@
 import SwiftUI
 
 enum EditTool: String, CaseIterable, Identifiable {
-    case adjust, looks, enhance, crop, restore, selective, heal, clone, cutout, pixelArt, lut, texture, maps
+    case presets, looks, lut
+    case enhance, adjust, curves, hsl, grade
+    case selective, gradient, radial
+    case heal, clone, smooth, restore
+    case crop, perspective
+    case blur, fx
+    case text, draw, layer, frame, cutout, pixelArt, texture, maps
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .adjust: return "Adjust"
+        case .presets: return "Presets"
         case .looks: return "Looks"
+        case .lut: return "LUT"
         case .enhance: return "Auto"
-        case .crop: return "Crop"
-        case .restore: return "Restore"
-        case .selective: return "Selective"
+        case .adjust: return "Adjust"
+        case .curves: return "Curves"
+        case .hsl: return "Colour Mix"
+        case .grade: return "Grading"
+        case .selective: return "Brush"
+        case .gradient: return "Linear"
+        case .radial: return "Radial"
         case .heal: return "Heal"
         case .clone: return "Clone"
+        case .smooth: return "Skin"
+        case .restore: return "Detail"
+        case .crop: return "Crop"
+        case .perspective: return "Perspective"
+        case .blur: return "Blur"
+        case .fx: return "Effects"
+        case .text: return "Text"
+        case .draw: return "Draw"
+        case .layer: return "Layer"
+        case .frame: return "Frame"
         case .cutout: return "Cutout"
         case .pixelArt: return "Pixel Art"
-        case .lut: return "LUT"
         case .texture: return "Texture"
         case .maps: return "AO & Fog"
         }
@@ -24,32 +44,52 @@ enum EditTool: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .adjust: return "slider.horizontal.3"
+        case .presets: return "sparkles.rectangle.stack"
         case .looks: return "camera.filters"
+        case .lut: return "cube"
         case .enhance: return "wand.and.rays"
-        case .crop: return "crop.rotate"
-        case .restore: return "bandage"
+        case .adjust: return "slider.horizontal.3"
+        case .curves: return "chart.xyaxis.line"
+        case .hsl: return "paintpalette"
+        case .grade: return "circle.lefthalf.filled"
         case .selective: return "paintbrush.pointed"
+        case .gradient: return "rectangle.split.1x2"
+        case .radial: return "circle.dashed"
         case .heal: return "eraser"
         case .clone: return "square.on.square.dashed"
+        case .smooth: return "face.smiling"
+        case .restore: return "bandage"
+        case .crop: return "crop.rotate"
+        case .perspective: return "perspective"
+        case .blur: return "drop"
+        case .fx: return "sparkles"
+        case .text: return "textformat"
+        case .draw: return "pencil.tip"
+        case .layer: return "square.on.square"
+        case .frame: return "photo.artframe"
         case .cutout: return "person.crop.rectangle"
         case .pixelArt: return "square.grid.3x3.square"
-        case .lut: return "cube"
         case .texture: return "square.grid.4x3.fill"
         case .maps: return "cloud.fog"
         }
     }
 
     static let groups: [(String, [EditTool])] = [
-        ("Tone & Colour", [.enhance, .adjust, .looks, .lut, .selective]),
-        ("Fix", [.restore, .heal, .clone, .crop]),
-        ("Create", [.cutout, .pixelArt, .texture, .maps]),
+        ("Presets & Looks", [.presets, .looks, .lut]),
+        ("Light & Colour", [.enhance, .adjust, .curves, .hsl, .grade]),
+        ("Local", [.selective, .gradient, .radial]),
+        ("Retouch", [.heal, .clone, .smooth, .restore]),
+        ("Geometry", [.crop, .perspective]),
+        ("Effects", [.blur, .fx]),
+        ("Create", [.text, .draw, .layer, .frame, .cutout, .pixelArt, .texture, .maps]),
     ]
 }
 
 /// State shared between a tool's panel and its overlay on the image.
 @MainActor
 final class EditorState: ObservableObject {
+    enum Pick: Equatable { case balance, color }
+
     @Published var strokes: [Stroke] = []
     @Published var brush: Double = 0.03
     @Published var erase = false
@@ -62,6 +102,26 @@ final class EditorState: ObservableObject {
     /// Cutout tap point (normalised).
     @Published var tap: CGPoint?
     @Published var brushActive = false
+    /// Op of panels that build their own (newer tools).
+    @Published var pendingOp: String?
+    /// Handles: gradient start/end, text / layer / blur centre.
+    @Published var p1 = CGPoint(x: 0.5, y: 0.5)
+    @Published var p2 = CGPoint(x: 0.5, y: 0.85)
+    /// Radial mask radii (fractions of width / height).
+    @Published var radius = CGSize(width: 0.25, height: 0.25)
+    /// Blur tool mode and tilt-shift band.
+    @Published var blurMode = "gaussian"
+    @Published var band = 0.2
+    @Published var angle = 0.0
+    /// Drawing.
+    @Published var marks: [DrawMark] = []
+    @Published var drawStyle = "pen"
+    @Published var drawColor = Color(red: 1, green: 0.3, blue: 0.4)
+    @Published var drawWidth = 0.01
+    @Published var drawFill = false
+    /// Eyedropper on the canvas.
+    @Published var picking: Pick?
+    @Published var pickedPoint: CGPoint?
 
     func reset() {
         strokes = []
@@ -72,6 +132,16 @@ final class EditorState: ObservableObject {
         cloneSetting = true
         tap = nil
         brushActive = false
+        pendingOp = nil
+        p1 = CGPoint(x: 0.5, y: 0.5)
+        p2 = CGPoint(x: 0.5, y: 0.85)
+        radius = CGSize(width: 0.25, height: 0.25)
+        blurMode = "gaussian"
+        band = 0.2
+        angle = 0
+        marks = []
+        picking = nil
+        pickedPoint = nil
     }
 }
 
@@ -80,6 +150,12 @@ struct EditScreen: View {
     @StateObject private var session = ToolSession()
     @StateObject private var editor = EditorState()
     @State private var tool: EditTool?
+    @State private var comparing = false
+    @AppStorage("pb.histogram") private var showHistogram = false
+    @State private var zoom: CGFloat = 1
+    @State private var zoomBase: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var panBase: CGSize = .zero
 
     var body: some View {
         VStack(spacing: 0) {
@@ -94,22 +170,33 @@ struct EditScreen: View {
         }
         .onChange(of: app.current) { _, new in session.load(new) }
         .onAppear { session.load(app.current) }
+        .sheet(isPresented: $app.showExport) {
+            ExportSheet().presentationDetents([.medium, .large]).presentationBackground(Theme.ink)
+        }
+        .sheet(isPresented: $app.showHistory) {
+            HistorySheet().presentationDetents([.medium, .large]).presentationBackground(Theme.ink)
+        }
     }
 
-    /// Undo / redo / save / share above the canvas.
+    /// Undo / redo / history / histogram / more / export above the canvas.
     private var editBar: some View {
         HStack(spacing: 8) {
             CircleButton(icon: "arrow.uturn.backward") { app.undo() }.disabled(!app.canUndo).opacity(app.canUndo ? 1 : 0.4)
             CircleButton(icon: "arrow.uturn.forward") { app.redo() }.disabled(!app.canRedo).opacity(app.canRedo ? 1 : 0.4)
+            CircleButton(icon: "clock.arrow.circlepath", badge: app.index) { app.showHistory = true }
             Spacer()
-            if let c = app.current {
-                ShareLink(item: c) {
-                    Image(systemName: "square.and.arrow.up").font(.system(size: 16, weight: .semibold))
-                        .frame(width: 42, height: 42).background(Theme.card2, in: Circle())
-                }
-                .buttonStyle(.plain)
+            Menu {
+                Button { showHistogram.toggle() } label: { Label(showHistogram ? "Hide Histogram" : "Show Histogram", systemImage: "chart.bar") }
+                Button { app.copyEdits() } label: { Label("Copy Edits", systemImage: "doc.on.doc") }
+                Button { pasteEdits() } label: { Label("Paste Edits", systemImage: "doc.on.clipboard") }.disabled(app.copiedEdits == nil)
+                Button { open(.presets) } label: { Label("Presets…", systemImage: "sparkles.rectangle.stack") }
+                Divider()
+                Button(role: .destructive) { app.jump(to: 0) } label: { Label("Revert to Original", systemImage: "arrow.counterclockwise") }.disabled(app.index == 0)
+            } label: {
+                Image(systemName: "ellipsis").font(.system(size: 16, weight: .semibold))
+                    .frame(width: 42, height: 42).background(Theme.card2, in: Circle())
             }
-            CircleButton(icon: "square.and.arrow.down") { save() }
+            CircleButton(icon: "square.and.arrow.up") { app.showExport = true }
             Button { app.mode = .upscale } label: {
                 Label("Upscale", systemImage: "wand.and.stars").font(.subheadline.weight(.bold))
                     .padding(.horizontal, 14).frame(height: 42).background(Theme.energy, in: Capsule()).foregroundStyle(.black)
@@ -119,41 +206,108 @@ struct EditScreen: View {
         .padding(.horizontal, 16).padding(.bottom, 6)
     }
 
+    private var shown: UIImage? {
+        if comparing { return tool == nil ? (app.originalPreview ?? app.preview) : app.preview }
+        return session.live ?? app.preview
+    }
+
     private var stage: some View {
-        ImageStage(image: session.live ?? app.preview) { rect in
-            toolOverlay(rect)
+        ImageStage(image: shown) { rect in
+            if !comparing { toolOverlay(rect) }
         }
+        .scaleEffect(tool == nil ? zoom : 1)
+        .offset(tool == nil ? pan : .zero)
+        .gesture(zoomGesture, including: tool == nil ? .all : .subviews)
+        .gesture(TapGesture(count: 2).onEnded {
+            withAnimation(.spring(duration: 0.3)) { zoom = 1; zoomBase = 1; pan = .zero; panBase = .zero }
+        }, including: tool == nil ? .all : .subviews)
+        .clipped()
         .padding(10)
         .overlay {
-            if session.busy { ProgressView().controlSize(.large) }
+            if session.busy || app.busy { ProgressView().controlSize(.large) }
         }
+        .overlay(alignment: .topTrailing) {
+            if showHistogram, let h = session.histogram { HistogramView(histogram: h).padding(14) }
+        }
+        .overlay(alignment: .bottomLeading) { compareButton.padding(16) }
+    }
+
+    private var zoomGesture: some Gesture {
+        SimultaneousGesture(
+            MagnificationGesture()
+                .onChanged { zoom = min(8, max(1, zoomBase * $0)) }
+                .onEnded { _ in zoomBase = zoom; if zoom <= 1.01 { pan = .zero; panBase = .zero } },
+            DragGesture()
+                .onChanged { v in if zoom > 1.01 { pan = CGSize(width: panBase.width + v.translation.width, height: panBase.height + v.translation.height) } }
+                .onEnded { _ in panBase = pan }
+        )
+    }
+
+    /// Press and hold to see the photo before the current tool (or, with
+    /// no tool open, the original).
+    private var compareButton: some View {
+        Image(systemName: comparing ? "eye.fill" : "eye")
+            .font(.system(size: 15, weight: .semibold))
+            .frame(width: 38, height: 38)
+            .background(.black.opacity(0.55), in: Circle())
+            .overlay(alignment: .trailing) {
+                if comparing {
+                    Text(tool == nil ? "Original" : "Before").font(.caption.bold())
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.black.opacity(0.6), in: Capsule()).fixedSize().offset(x: 80)
+                }
+            }
+            .onLongPressGesture(minimumDuration: 0.05, maximumDistance: 60, perform: {}, onPressingChanged: { comparing = $0 })
     }
 
     @ViewBuilder
     private func toolOverlay(_ rect: CGRect) -> some View {
-        switch tool {
-        case .selective, .heal:
-            BrushOverlay(rect: rect, strokes: $editor.strokes, radius: editor.brush, erase: editor.erase) { editor.objectWillChange.send() }
-        case .cutout where editor.brushActive:
-            BrushOverlay(rect: rect, strokes: $editor.strokes, radius: editor.brush, erase: editor.erase) { editor.objectWillChange.send() }
-        case .crop:
-            CropOverlay(rect: rect, crop: $editor.crop, aspect: editor.cropAspect, imageSize: app.preview?.size ?? .zero)
-        case .clone, .cutout:
-            TapOverlay(rect: rect) { p in
-                if tool == .clone {
-                    if editor.cloneSetting { editor.cloneSource = p; editor.cloneSetting = false } else { cloneStamp(at: p) }
-                } else {
-                    editor.tap = p
+        if editor.picking != nil {
+            TapOverlay(rect: rect) { p in editor.pickedPoint = p }
+        } else {
+            switch tool {
+            case .selective, .heal, .smooth:
+                BrushOverlay(rect: rect, strokes: $editor.strokes, radius: editor.brush, erase: editor.erase) { editor.objectWillChange.send() }
+            case .cutout where editor.brushActive:
+                BrushOverlay(rect: rect, strokes: $editor.strokes, radius: editor.brush, erase: editor.erase) { editor.objectWillChange.send() }
+            case .crop:
+                ZStack {
+                    CropOverlay(rect: rect, crop: $editor.crop, aspect: editor.cropAspect, imageSize: app.preview?.size ?? .zero)
+                    GridOverlay(rect: rect, lines: 3)
                 }
-            }
-            .overlay {
-                if tool == .clone, let s = editor.cloneSource {
-                    Circle().stroke(Theme.accent, lineWidth: 2).frame(width: 26, height: 26)
-                        .position(x: rect.minX + s.x * rect.width, y: rect.minY + s.y * rect.height)
+            case .perspective:
+                GridOverlay(rect: rect)
+            case .gradient:
+                GradientOverlay(rect: rect, start: $editor.p1, end: $editor.p2)
+            case .radial:
+                RadialOverlay(rect: rect, center: $editor.p1, radius: $editor.radius)
+            case .text, .layer:
+                PointOverlay(rect: rect, point: $editor.p1)
+            case .blur:
+                if editor.blurMode == "tilt" {
+                    BandOverlay(rect: rect, y: $editor.p1.y, band: editor.band, angle: editor.angle)
+                } else if editor.blurMode == "zoom" || editor.blurMode == "spin" {
+                    PointOverlay(rect: rect, point: $editor.p1)
                 }
+            case .draw:
+                DrawOverlay(rect: rect, editor: editor)
+            case .clone, .cutout:
+                TapOverlay(rect: rect) { p in
+                    if tool == .clone {
+                        if editor.cloneSetting { editor.cloneSource = p; editor.cloneSetting = false } else { cloneStamp(at: p) }
+                    } else {
+                        editor.tap = p
+                    }
+                }
+                .overlay {
+                    if tool == .clone, let s = editor.cloneSource {
+                        Circle().stroke(Theme.accent, lineWidth: 2).frame(width: 26, height: 26)
+                            .position(x: rect.minX + s.x * rect.width, y: rect.minY + s.y * rect.height)
+                    }
+                }
+            default:
+                EmptyView()
             }
-        default:
-            EmptyView()
         }
     }
 
@@ -183,7 +337,7 @@ struct EditScreen: View {
                             Button { open(t) } label: {
                                 VStack(spacing: 6) {
                                     Image(systemName: t.icon).font(.title3)
-                                    Text(t.title).font(.caption2)
+                                    Text(t.title).font(.caption2).lineLimit(1).minimumScaleFactor(0.8)
                                 }
                                 .frame(maxWidth: .infinity, minHeight: 64)
                                 .background(Theme.card2, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -201,8 +355,9 @@ struct EditScreen: View {
     private func open(_ t: EditTool) {
         editor.reset()
         session.clear()
+        zoom = 1; zoomBase = 1; pan = .zero; panBase = .zero
         if t == .enhance {
-            session.apply(opJSON("auto_enhance"), to: app, name: "auto_enhance")
+            session.apply(opJSON("auto_enhance"), to: app, name: "Auto")
             return
         }
         tool = t
@@ -214,17 +369,15 @@ struct EditScreen: View {
         session.clear()
     }
 
+    private func pasteEdits() {
+        guard let r = app.copiedEdits else { return }
+        app.run(r, step: "Pasted edits")
+    }
+
     private func cloneStamp(at p: CGPoint) {
         guard let s = editor.cloneSource else { return }
         let op = opJSON("clone_stamp", ["sx": s.x, "sy": s.y, "dx": p.x, "dy": p.y, "radius": editor.brush, "hardness": 0.5])
-        session.apply(op, to: app, name: "clone")
-    }
-
-    private func save() {
-        guard let c = app.current else { return }
-        Task {
-            do { try await PhotoIO.saveToPhotos(c); app.flash("Saved to Photos") } catch { app.message = describe(error) }
-        }
+        session.apply(op, to: app, name: "Clone")
     }
 }
 
