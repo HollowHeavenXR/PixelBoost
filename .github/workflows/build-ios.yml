@@ -127,7 +127,7 @@ jobs:
           echo "CFBundleIcons: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" 2>&1)"
 
       - name: Sign ad-hoc with the App Group and verify
-        run: scripts/sign-adhoc.sh "$APP_PATH"
+        run: bash scripts/sign-adhoc.sh "$APP_PATH"
 
       - name: Package IPA
         run: |

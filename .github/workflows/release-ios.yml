@@ -146,7 +146,7 @@ jobs:
       # certificate needed) with only the App Group, so free Apple IDs, which
       # can't use most other entitlements, still install it.
       - name: Sign ad-hoc with the App Group and verify
-        run: scripts/sign-adhoc.sh "$APP_PATH"
+        run: bash scripts/sign-adhoc.sh "$APP_PATH"
 
       - name: Package IPA
         id: ipa
@@ -202,7 +202,7 @@ jobs:
           rm -rf /tmp/pb-check && mkdir -p /tmp/pb-check
           gh release download "${{ steps.version.outputs.tag }}" -p "${{ steps.ipa.outputs.ipa_name }}" -D /tmp/pb-check
           cd /tmp/pb-check && unzip -q "${{ steps.ipa.outputs.ipa_name }}"
-          "$GITHUB_WORKSPACE/scripts/verify-signed.sh" "$(ls -d /tmp/pb-check/Payload/*.app | head -1)"
+          bash "$GITHUB_WORKSPACE/scripts/verify-signed.sh" "$(ls -d /tmp/pb-check/Payload/*.app | head -1)"
 
       # Best-effort: never fail the release over this housekeeping commit.
       - name: Commit stamped version back to main

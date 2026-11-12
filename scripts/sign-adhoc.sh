@@ -44,4 +44,4 @@ done
 # 3. The app itself.
 codesign -f -s - --entitlements "$ENT" "$APP"
 
-"$(dirname "$0")/verify-signed.sh" "$APP"
+bash "$(dirname "$0")/verify-signed.sh" "$APP"
