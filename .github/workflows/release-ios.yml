@@ -176,7 +176,7 @@ jobs:
 
           Ad-hoc signed IPA with the App Group embedded (app, widgets and Share extension) — install with SideStore, AltStore, Sideloadly or LiveContainer; they re-sign it with your Apple ID.
 
-          PixelBoost is an AI upscaler and a full photo editor: presets, light & colour, curves, HSL colour mix, grading wheels, brush / linear / radial local adjustments, heal, clone, skin smoothing, crop & perspective, portrait / lens / tilt-shift / zoom / motion blur, creative effects, text, drawing, image layers with blend modes, frames, cutout and export to JPEG / PNG / WebP / 16-bit TIFF. Every pixel operation runs in PixelBoost's own Rust engine on the device.
+          PixelBoost is an AI upscaler and a full photo editor: presets, light & colour, curves, HSL colour mix, grading wheels, brush / linear / radial local adjustments, heal, clone, skin smoothing, crop & perspective, portrait / lens / tilt-shift / zoom / motion blur, creative effects, text, drawing, image layers with blend modes, frames, cutout and export to JPEG / PNG / WebP / 16-bit TIFF. Every pixel operation runs on the device in the PixelBoost Rust engine.
           EOF
           )
 
