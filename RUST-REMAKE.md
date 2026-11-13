@@ -107,6 +107,41 @@ Models/pbnn/       converted models (fp16 .pbnn)
   tilt-shift 1249/69, lens 459/83, zoom 1573/137, oil 451/40, text 361/19,
   draw 109/8, perspective 363/25, Cinematic preset 667/36.
 
+## 5.3 — smart settings, replace in Photos, shape crops (2026-11-12)
+
+- [x] `pb_core::analyze`: reads the photo and chooses every upscale
+      setting. Measures noise (Immerkær on non-edge pixels, native-res
+      centre crop), JPEG blocking (8x8 boundary vs in-block steps),
+      softness (Crété re-blur metric), skin share (portrait -> Clean),
+      content kind; then size (4K-class long side within the MP cap),
+      model, denoise, clarity, detail and quality passes within a compute
+      budget (phone GFLOP/s x longest wait; the cloud has no limit).
+      Calibrated on the gallery set + degraded copies (`pixelboost analyze
+      testimages/src --degrade soft|noise|jpeg`): real Q25 JPEG blocking
+      1.0, Q85+ ~0.2; blur 0.7 -> ~0.5 sharpness. 8-bit decode path: 64 MP
+      peaks at 208 MB, ~100 ms for 12 MP here.
+- [x] `pb_core::meta`: EXIF + ICC from JPEG / PNG / WebP / HEIC (own
+      ISOBMFF iinf/iloc/colr reader), EXIF patched (orientation 1, pixel
+      size, thumbnail IFD dropped), written into the replacement JPEG/PNG.
+      CLI `pixelboost replace <original> <result> <out base>`.
+- [x] Replace in Photos (Swift `PhotoLibrary`): edit-in-place via
+      PHContentEditingOutput (revertible, keeps albums/favourite/date/place)
+      or new photo + delete original (same date/place/favourite/albums;
+      iOS confirms). Studio result, Cloud results and Batch ("Replace the
+      originals"). Picker imports now keep the asset id.
+- [x] `pb_core::shape`: 16 shape crops as signed distance functions
+      (circle, oval, squircle, rounded, arch, hexagon, octagon, pentagon,
+      diamond, triangle, star, heart, flower, badge, burst, shield) with
+      rotation + shape parameter, and stacked rings (solid, gradient,
+      rainbow, neon, double, dashed, dotted, story) with gap / thickness /
+      colours; `shape_outline` traces any iso-line for the app overlay.
+      Op `shape_crop`; CLI `pixelboost shape in out <shape> '<rings json>'`.
+- [x] Crop tool: shape picker, ring editor + presets, live overlay, real
+      thumbnail preview; crop live-preview now shows only the straighten
+      (it used to show the cropped image under the crop frame).
+- [x] Upscale sheet: Smart card (summary, measured noise/blocks/sharpness,
+      reasons, longest wait 1/3/10 min/no limit, "Customize").
+
 ## Bench numbers (26 gallery images, 256px GT crop -> 64px -> 4x)
 
 Final settings (`pixelboost eval testimages/src OUT --crop 256`):
@@ -138,4 +173,7 @@ cargo build --release
 ./target/release/pixelboost upscale in.jpg out.png --model auto
 ./target/release/pixelboost eval testimages/src /tmp/eval --crop 256 [--jpeg 85]
 ./target/release/pixelboost bench photo 96
+./target/release/pixelboost analyze testimages/src/* [-v] [--gflops 40] [--seconds 180] [--cloud]
+./target/release/pixelboost shape in.jpg out.png heart '[{"style":"neon","width":0.03}]'
+./target/release/pixelboost replace original.heic upscaled.png out   # -> out.jpg
 ```

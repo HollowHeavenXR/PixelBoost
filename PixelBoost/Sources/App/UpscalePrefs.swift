@@ -11,6 +11,10 @@ struct UpscaleChoice: DynamicProperty {
     @AppStorage("up.where") var whereTo = "device"
     /// Learned speed of this phone (GFLOP/s).
     @AppStorage("up.gflops") var gflops = 40.0
+    /// Let the Rust analyzer choose every setting per photo.
+    @AppStorage("up.smart") var smart = true
+    /// Longest on-device run Smart may plan for (seconds, 0 = no limit).
+    @AppStorage("up.maxWait") var maxWait = 180.0
 
     var settings: UpscaleSettings {
         UpscaleSettings(model: model, scale: Float(scale), fidelity: fidelity, detail: Float(detail),
@@ -18,8 +22,34 @@ struct UpscaleChoice: DynamicProperty {
     }
 
     /// Settings for the server worker.
-    var cloudSettings: [String: Any] {
-        ["model": model, "scale": scale, "fidelity": fidelity, "detail": detail, "denoise": denoise, "ensemble": quality, "format": "png"]
+    var cloudSettings: [String: Any] { Self.cloudSettings(settings) }
+
+    static func cloudSettings(_ s: UpscaleSettings) -> [String: Any] {
+        ["model": s.model, "scale": Double(s.scale), "fidelity": s.fidelity, "detail": Double(s.detail), "denoise": Double(s.denoise),
+         "ensemble": Int(s.ensemble), "format": "png"]
+    }
+
+    /// Smart analysis of a photo for where it will run (cached per photo).
+    func analysis(for url: URL, cloud: Bool) async -> PhotoAnalysis? {
+        await SmartCache.shared.analysis(for: url, cloud: cloud, gflops: gflops, maxWait: maxWait)
+    }
+
+    /// Settings to run with: Smart's for this photo, else the manual ones.
+    func resolved(for url: URL, cloud: Bool) async -> UpscaleSettings {
+        if smart, let a = await analysis(for: url, cloud: cloud) { return a.settings }
+        return settings
+    }
+
+    /// Copy Smart's choices into the manual controls (to tweak them).
+    func adopt(_ a: PhotoAnalysis) {
+        let s = a.settings
+        model = s.model
+        scale = Double(s.scale)
+        fidelity = s.fidelity
+        detail = Double(s.detail)
+        denoise = Double(s.denoise)
+        quality = Int(s.ensemble)
+        smart = false
     }
 
     struct Option: Identifiable {
@@ -39,6 +69,34 @@ struct UpscaleChoice: DynamicProperty {
     ]
 
     static func name(_ id: String) -> String { models.first { $0.id == id }?.name ?? id }
+}
+
+/// Smart analyses, one per (photo, where, budget). The analysis reads the
+/// whole photo, so it runs once and off the main thread.
+@MainActor
+final class SmartCache {
+    static let shared = SmartCache()
+    private var done: [String: PhotoAnalysis] = [:]
+    private var running: [String: Task<PhotoAnalysis?, Never>] = [:]
+
+    func analysis(for url: URL, cloud: Bool, gflops: Double, maxWait: Double) async -> PhotoAnalysis? {
+        let key = "\(url.path)|\(cloud)|\(Int(gflops / 5))|\(Int(maxWait))"
+        if let a = done[key] { return a }
+        if let t = running[key] { return await t.value }
+        let path = url.path
+        let budget = Float(maxWait <= 0 ? 1e9 : maxWait)
+        let t = Task.detached(priority: .userInitiated) { () -> PhotoAnalysis? in
+            try? Core.engine.analyze(inputPath: path, deviceGflops: Float(gflops), maxSeconds: budget, maxOutputMp: 120, cloud: cloud)
+        }
+        running[key] = t
+        let a = await t.value
+        running[key] = nil
+        if let a {
+            if done.count > 40 { done.removeAll() }
+            done[key] = a
+        }
+        return a
+    }
 }
 
 func formatDuration(_ s: Double) -> String {

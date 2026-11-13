@@ -27,6 +27,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var index = 0
     /// The photo as first imported (Cutout touch-up, compare).
     private(set) var original: URL?
+    /// Photo-library asset the photo came from (picker imports), so a
+    /// result can replace it in the user's library.
+    @Published private(set) var sourceAsset: String?
     /// Display-size preview of the original (press-and-hold compare).
     @Published private(set) var originalPreview: UIImage?
 
@@ -39,7 +42,8 @@ final class AppModel: ObservableObject {
     /// Undone edits that redo would bring back.
     var undone: [EditStep] { Array(stepList.dropFirst(index)) }
 
-    func setPhoto(_ url: URL) {
+    func setPhoto(_ url: URL, asset: String? = nil) {
+        sourceAsset = asset
         timeline = [url]
         stepList = []
         index = 0
@@ -153,6 +157,27 @@ final class AppModel: ObservableObject {
         if let img = SharedPhotoBridge.consumePendingImage(), let data = img.pngData() {
             importData(data)
             mode = .upscale
+        }
+    }
+
+    /// Put `result` back in place of the photo it came from.
+    func replaceOriginal(with result: URL, model: String, scale: Float) {
+        guard let asset = sourceAsset else { return }
+        let note = Core.engine.replacementNote(model: model, scale: scale, inWidth: info?.width ?? 0, inHeight: info?.height ?? 0)
+        replace(asset: asset, with: result, note: note)
+    }
+
+    func replace(asset: String, with result: URL, note: String) {
+        busy = true
+        Task {
+            do {
+                let o = try await PhotoLibrary.replace(assetID: asset, with: result, note: note)
+                flash(o.message)
+                log("replace_original", ["method": PhotoLibrary.method.rawValue])
+            } catch {
+                message = describe(error)
+            }
+            busy = false
         }
     }
 

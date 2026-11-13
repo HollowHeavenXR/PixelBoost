@@ -96,6 +96,13 @@ final class EditorState: ObservableObject {
     /// Normalised crop rectangle.
     @Published var crop = CGRect(x: 0, y: 0, width: 1, height: 1)
     @Published var cropAspect: CGFloat? = nil
+    /// Shape crop ("rect" = plain crop) and its rings.
+    @Published var cropShape = "rect"
+    @Published var shapeRotation = 0.0
+    @Published var shapeParam = 0.0
+    @Published var rings: [RingSpec] = []
+    @Published var shapeFilled = false
+    @Published var shapeFill = Color.white
     /// Clone source and last destination (normalised).
     @Published var cloneSource: CGPoint?
     @Published var cloneSetting = true
@@ -128,6 +135,11 @@ final class EditorState: ObservableObject {
         erase = false
         crop = CGRect(x: 0, y: 0, width: 1, height: 1)
         cropAspect = nil
+        cropShape = "rect"
+        shapeRotation = 0
+        shapeParam = 0
+        rings = []
+        shapeFilled = false
         cloneSource = nil
         cloneSetting = true
         tap = nil
@@ -272,7 +284,10 @@ struct EditScreen: View {
                 BrushOverlay(rect: rect, strokes: $editor.strokes, radius: editor.brush, erase: editor.erase) { editor.objectWillChange.send() }
             case .crop:
                 ZStack {
-                    CropOverlay(rect: rect, crop: $editor.crop, aspect: editor.cropAspect, imageSize: app.preview?.size ?? .zero)
+                    if editor.cropShape != "rect" {
+                        ShapeOverlay(rect: rect, editor: editor, imageSize: shown?.size ?? .zero)
+                    }
+                    CropOverlay(rect: rect, crop: $editor.crop, aspect: editor.cropAspect, imageSize: shown?.size ?? .zero)
                     GridOverlay(rect: rect, lines: 3)
                 }
             case .perspective:

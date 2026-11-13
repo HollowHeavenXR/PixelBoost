@@ -18,7 +18,7 @@ struct PhotoPickerButton: View {
         .onChange(of: item) { _, new in
             guard let new else { return }
             Task {
-                do { app.setPhoto(try await PhotoIO.importItem(new)) } catch { app.message = describe(error) }
+                do { app.setPhoto(try await PhotoIO.importItem(new), asset: new.itemIdentifier) } catch { app.message = describe(error) }
                 item = nil
             }
         }

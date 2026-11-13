@@ -11,6 +11,8 @@ struct StudioView: View {
     @State private var showSheet = false
     @State private var comparing = false
     @State private var resultPreview: UIImage?
+    @State private var smartSummary: String?
+    @State private var lastScale: Float = 4
     let choice = UpscaleChoice()
 
     var body: some View {
@@ -32,6 +34,11 @@ struct StudioView: View {
             job.reset()
             resultPreview = nil
             comparing = false
+        }
+        .task(id: "\(app.current?.path ?? "")|\(choice.smart)|\(choice.whereTo)|\(choice.maxWait)") {
+            smartSummary = nil
+            guard choice.smart, let url = app.current else { return }
+            smartSummary = await choice.analysis(for: url, cloud: choice.whereTo == "cloud")?.summary
         }
     }
 
@@ -78,8 +85,7 @@ struct StudioView: View {
                 HStack(spacing: 10) {
                     Image(systemName: choice.whereTo == "cloud" ? "cloud.fill" : "iphone")
                         .foregroundStyle(Theme.amber)
-                    Text("\(UpscaleChoice.name(choice.model)) · \(Int(choice.scale))× · \(choice.fidelity.capitalized)\(choice.quality > 1 ? " · \(choice.quality == 2 ? "High" : "Max")" : "")")
-                        .font(.subheadline.weight(.medium))
+                    Text(summaryText).font(.subheadline.weight(.medium)).lineLimit(1)
                     Spacer()
                     Text("Change").font(.subheadline).foregroundStyle(Theme.dim)
                     Image(systemName: "chevron.up").font(.caption.bold()).foregroundStyle(Theme.dim)
@@ -93,6 +99,13 @@ struct StudioView: View {
                 choice.whereTo == "cloud" ? sendToCloud() : startOnDevice()
             }
         }
+    }
+
+    private var summaryText: String {
+        if choice.smart {
+            return smartSummary.map { "Smart · \($0)" } ?? "Smart settings"
+        }
+        return "\(UpscaleChoice.name(choice.model)) · \(Int(choice.scale))× · \(choice.fidelity.capitalized)\(choice.quality > 1 ? " · \(choice.quality == 2 ? "High" : "Max")" : "")"
     }
 
     private var running: some View {
@@ -130,8 +143,17 @@ struct StudioView: View {
                 }
                 .disabled(resultPreview == nil)
             }
+            if app.sourceAsset != nil {
+                Button { app.replaceOriginal(with: URL(fileURLWithPath: o.outputPath), model: o.model, scale: lastScale) } label: {
+                    Label("Replace original in Photos", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.subheadline.weight(.bold)).frame(maxWidth: .infinity).padding(.vertical, 11)
+                        .background(Theme.energy, in: Capsule()).foregroundStyle(.black)
+                }
+                .buttonStyle(.plain)
+                .disabled(app.busy)
+            }
             HStack(spacing: 8) {
-                action("Save", "square.and.arrow.down") { save(o) }
+                action(app.sourceAsset != nil ? "Copy" : "Save", "square.and.arrow.down") { save(o) }
                 ShareLink(item: URL(fileURLWithPath: o.outputPath)) {
                     Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity).padding(.vertical, 10)
                         .background(Theme.card2, in: Capsule())
@@ -160,20 +182,25 @@ struct StudioView: View {
     private func sendToCloud() {
         showSheet = false
         guard let url = app.current else { return }
-        let label = app.info.map { "\($0.width)×\($0.height) → \(Int(choice.scale))×" } ?? ""
-        CloudStore.shared.send(url, settings: choice.cloudSettings, label: label, app: app)
+        let asset = app.sourceAsset
+        Task {
+            let s = await choice.resolved(for: url, cloud: true)
+            let label = app.info.map { "\($0.width)×\($0.height) → \(Int(s.scale))×" } ?? ""
+            CloudStore.shared.send(url, settings: UpscaleChoice.cloudSettings(s), label: label, app: app, asset: asset)
+        }
     }
 
     private func startOnDevice() {
         showSheet = false
         guard let url = app.current, let info = app.info else { return }
-        let s = choice.settings
-        let outW = Int((Double(info.width) * choice.scale).rounded()), outH = Int((Double(info.height) * choice.scale).rounded())
         comparing = false
         resultPreview = nil
         UIApplication.shared.isIdleTimerDisabled = true
-        let quality = choice.quality, scale = choice.scale
         Task {
+            let s = await choice.resolved(for: url, cloud: false)
+            let quality = Int(s.ensemble), scale = Double(s.scale)
+            lastScale = s.scale
+            let outW = Int((Double(info.width) * scale).rounded()), outH = Int((Double(info.height) * scale).rounded())
             let began = Date()
             let o = await job.run(input: url, settings: s, base: app.preview, outW: outW, outH: outH)
             UIApplication.shared.isIdleTimerDisabled = false

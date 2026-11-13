@@ -33,3 +33,21 @@ operation is a call into PixelBoostCore (Rust).
       range — the Rust masks already support it, needs UI).
 - [ ] Batch: apply a preset to many photos (Rust side is just `edit_file`
       per photo with the preset JSON).
+
+## 5.3 (2026-11-12)
+
+- [x] Smart settings: `UpscaleChoice.smart` / `maxWait`, `SmartCache`
+      (one Rust analysis per photo + budget), Smart card in UpscaleSheet,
+      Studio / Batch / Cloud run with the per-photo settings.
+- [x] Replace in Photos: `Platform/PhotoLibrary.swift` (edit in place or
+      swap), `AppModel.sourceAsset` from picker imports, Settings ›
+      "Replacing originals", Cloud jobs remember their asset
+      (`cloud.assets`), Batch output picker.
+- [x] Shape crops + rings: `Views/Editor/ShapeCrop.swift` (RingSpec,
+      ShapeKit outlines from Rust, ShapeOverlay, ShapeCropControls).
+- [ ] Try on a device: edit-in-place of a Live Photo and of an iCloud-only
+      original (falls back to swap if Photos refuses the edit).
+- [ ] Limited photo access: replacing needs the original in the allowed
+      set; offer the limited-library picker when `notFound`.
+- [ ] Export sheet could offer "Replace original" for edited photos too.
+- [ ] Shape crop: drag on the canvas to rotate the shape (slider only now).

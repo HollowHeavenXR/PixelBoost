@@ -93,7 +93,7 @@ struct ToolPanel: View {
                 }
             }
         }
-        .onChange(of: opKey) { _, _ in session.preview(op) }
+        .onChange(of: opKey) { _, _ in session.preview(previewOp) }
         .onChange(of: editor.strokes) { _, _ in
             renderStrokes()
             session.preview(op)
@@ -134,6 +134,13 @@ struct ToolPanel: View {
 
     private var opKey: String { op ?? "" }
 
+    /// What the canvas previews live. The crop tool shows only the
+    /// straighten: the crop frame and shape are drawn over the full photo.
+    private var previewOp: String? {
+        guard tool == .crop else { return op }
+        return abs(straighten) > 0.05 ? opJSON("straighten", ["degrees": straighten]) : nil
+    }
+
     private var adjustFields: [String: Any] {
         ["brightness": brightness, "contrast": contrast, "saturation": saturation, "exposure": exposure,
          "warmth": warmth, "tint": tint, "vibrance": vibrance, "highlights": highlights, "shadows": shadows,
@@ -159,7 +166,9 @@ struct ToolPanel: View {
             var ops: [[String: Any]] = []
             if abs(straighten) > 0.05 { ops.append(opDict("straighten", ["degrees": straighten])) }
             let c = editor.crop
-            if c.width < 0.999 || c.height < 0.999 {
+            if let shape = shapeCropOp(editor) {
+                ops.append(shape)
+            } else if c.width < 0.999 || c.height < 0.999 {
                 ops.append(opDict("crop", ["x": c.minX, "y": c.minY, "w": c.width, "h": c.height]))
             }
             return ops.isEmpty ? nil : opJSON("chain", ["ops": ops])
@@ -291,8 +300,11 @@ struct ToolPanel: View {
                     Button { session.apply(opJSON("flip", ["horizontal": false]), to: app, name: "Flip") } label: { Image(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down") }
                 }
                 .buttonStyle(.bordered)
-                ChipPicker(options: Self.aspects, selection: aspectBinding)
+                if editor.cropShape == "rect" || ShapeKit.stretches(editor.cropShape) {
+                    ChipPicker(options: Self.aspects, selection: aspectBinding)
+                }
                 SliderRow(label: "Straighten", value: $straighten, range: -45...45, format: { String(format: "%.1f°", $0) })
+                ShapeCropControls(editor: editor, session: session) { square in if square { setAspect(1) } else { editor.cropAspect = nil } }
             }
         case .perspective:
             VStack(spacing: 10) {

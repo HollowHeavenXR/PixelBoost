@@ -11,13 +11,16 @@ struct BatchScreen: View {
     @State private var queue: [BatchItem] = []
     @State private var running = false
     @State private var cancelled = false
-    @AppStorage("batch.save") private var saveToPhotos = true
+    /// "new" (save results as new photos), "replace" (replace each
+    /// original in the library) or "none".
+    @AppStorage("batch.output") private var output = "new"
 
     let choice = UpscaleChoice()
 
     struct BatchItem: Identifiable {
         let id = UUID()
         var source: URL?
+        var asset: String?
         var status = "Waiting"
         var result: URL?
         var thumb: UIImage?
@@ -27,13 +30,25 @@ struct BatchScreen: View {
         NavigationStack {
             List {
                 Section {
-                    PhotosPicker(selection: $items, maxSelectionCount: 50, matching: .images) {
+                    PhotosPicker(selection: $items, maxSelectionCount: 50, matching: .images, photoLibrary: .shared()) {
                         Label("Add photos", systemImage: "plus.circle.fill")
                     }
                     .disabled(running)
-                    Toggle("Save results to Photos", isOn: $saveToPhotos)
-                    Text("Runs on this iPhone with your upscale settings: \(UpscaleChoice.name(choice.model)), \(Int(choice.scale))×, \(choice.fidelity). For big batches, send them to PixelBoost Cloud instead.")
+                    Picker("Results", selection: $output) {
+                        Text("Save as new photos").tag("new")
+                        Text("Replace the originals").tag("replace")
+                        Text("Keep in the app").tag("none")
+                    }
+                    Text(choice.smart
+                         ? "Runs on this iPhone. Smart settings look at each photo and choose its size, model and clean-up. For big batches, send them to PixelBoost Cloud instead."
+                         : "Runs on this iPhone with your upscale settings: \(UpscaleChoice.name(choice.model)), \(Int(choice.scale))×, \(choice.fidelity). For big batches, send them to PixelBoost Cloud instead.")
                         .font(.caption).foregroundStyle(Theme.dim)
+                    if output == "replace" {
+                        Text(PhotoLibrary.method == .edit
+                             ? "Each original is replaced as an edit — Revert in Photos brings it back."
+                             : "Each result is added with the original's date, place and albums, then iOS asks to delete the originals.")
+                            .font(.caption).foregroundStyle(Theme.dim)
+                    }
                 }
                 if !queue.isEmpty {
                     Section("Queue") {
@@ -75,6 +90,7 @@ struct BatchScreen: View {
             Task {
                 for p in picked {
                     var b = BatchItem()
+                    b.asset = p.itemIdentifier
                     if let u = try? await PhotoIO.importItem(p) {
                         b.source = u
                         b.thumb = (try? Core.engine.loadPreview(path: u.path, maxSide: 160))?.uiImage
@@ -100,15 +116,29 @@ struct BatchScreen: View {
                       let info = try? Core.engine.imageInfo(path: src.path) else { continue }
                 queue[i].status = "Upscaling…"
                 BatchActivity.update(activity, done: finished, total: queue.count, name: "Photo \(i + 1)")
-                let s = choice.settings
-                let scale = choice.scale
+                let s = await choice.resolved(for: src, cloud: false)
+                let scale = Double(s.scale)
                 let o = await job.run(input: src, settings: s, base: nil,
                                       outW: Int(Double(info.width) * scale), outH: Int(Double(info.height) * scale))
                 if let o {
                     let url = URL(fileURLWithPath: o.outputPath)
                     queue[i].result = url
                     queue[i].status = "\(o.width)×\(o.height) · \(formatDuration(o.seconds))"
-                    if saveToPhotos { try? await PhotoIO.saveToPhotos(url) }
+                    switch output {
+                    case "replace" where queue[i].asset != nil:
+                        let note = Core.engine.replacementNote(model: o.model, scale: s.scale, inWidth: info.width, inHeight: info.height)
+                        do {
+                            let r = try await PhotoLibrary.replace(assetID: queue[i].asset!, with: url, note: note)
+                            queue[i].status += r == .edited || r == .swapped ? " · replaced" : " · added"
+                        } catch {
+                            queue[i].status += " · not replaced"
+                            app.message = describe(error)
+                        }
+                    case "none":
+                        break
+                    default:
+                        try? await PhotoIO.saveToPhotos(url)
+                    }
                     let entry = HistoryEntry(id: "", createdAt: 0, model: o.model, scale: Float(scale), inWidth: info.width, inHeight: info.height,
                                              outWidth: o.width, outHeight: o.height, seconds: o.seconds, fidelityDb: o.fidelityDb, resultPath: "", thumbPath: "")
                     _ = try? Core.history.add(entry: entry, resultFile: o.outputPath)

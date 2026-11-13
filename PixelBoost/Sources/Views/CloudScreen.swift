@@ -47,7 +47,7 @@ struct CloudScreen: View {
             Text(cloud.reachable == false ? "Cloud unreachable" : cloud.activeCount > 0 ? "\(cloud.activeCount) working" : "Cloud ready")
                 .font(.footnote.weight(.medium)).foregroundStyle(Theme.dim)
             Spacer()
-            PhotosPicker(selection: $picks, maxSelectionCount: 30, matching: .images) {
+            PhotosPicker(selection: $picks, maxSelectionCount: 30, matching: .images, photoLibrary: .shared()) {
                 Label("Send photos", systemImage: "plus").font(.footnote.weight(.semibold))
                     .padding(.horizontal, 12).padding(.vertical, 8).background(Theme.card2, in: Capsule())
             }
@@ -134,8 +134,14 @@ struct CloudScreen: View {
                 Text("\(Int(p * 100))%").font(.caption.monospacedDigit()).foregroundStyle(Theme.dim)
             }
         } else if let u = cloud.localResult(j) {
+            if let asset = cloud.sourceAsset(j) {
+                pill("Replace original in Photos", "arrow.triangle.2.circlepath") {
+                    let note = Core.engine.replacementNote(model: j.model, scale: j.scale, inWidth: j.inWidth, inHeight: j.inHeight)
+                    app.replace(asset: asset, with: u, note: note)
+                }
+            }
             HStack(spacing: 8) {
-                pill("Save to Photos", "square.and.arrow.down") {
+                pill(cloud.sourceAsset(j) != nil ? "Save copy" : "Save to Photos", "square.and.arrow.down") {
                     Task {
                         do { try await PhotoIO.saveToPhotos(u); app.flash("Saved to Photos") } catch { app.message = describe(error) }
                     }
@@ -163,14 +169,14 @@ struct CloudScreen: View {
     private func sendPicked(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
         picks = []
-        let settings = choice.cloudSettings
-        let scale = Int(choice.scale)
         Task {
             for it in items {
                 if let url = try? await PhotoIO.importItem(it) {
+                    // Smart settings are chosen per photo.
+                    let s = await choice.resolved(for: url, cloud: true)
                     let info = try? Core.engine.imageInfo(path: url.path)
-                    let label = info.map { "\($0.width)×\($0.height) → \(scale)×" } ?? "Photo"
-                    cloud.send(url, settings: settings, label: label, app: app)
+                    let label = info.map { "\($0.width)×\($0.height) → \(Int(s.scale))×" } ?? "Photo"
+                    cloud.send(url, settings: UpscaleChoice.cloudSettings(s), label: label, app: app, asset: it.itemIdentifier)
                 }
             }
         }

@@ -5,6 +5,7 @@ struct SettingsScreen: View {
     @AppStorage("pb.server") private var server = Prefs.defaultServer
     @AppStorage("pb.apiKey") private var apiKey = ""
     @AppStorage("pb.telemetry") private var telemetry = true
+    @AppStorage("pb.replaceMethod") private var replaceMethod = PhotoLibrary.Method.edit.rawValue
     @State private var health: String?
     @State private var exports: [StoredImage] = []
     @Environment(\.dismiss) private var dismiss
@@ -21,6 +22,13 @@ struct SettingsScreen: View {
                             Text(m.bestFor).font(.caption).foregroundStyle(Theme.dim)
                         }
                     }
+                }
+                Section {
+                    Picker("Replace method", selection: $replaceMethod) {
+                        ForEach(PhotoLibrary.Method.allCases) { m in Text(m.title).tag(m.rawValue) }
+                    }
+                } header: { Text("Replacing originals in Photos") } footer: {
+                    Text("Edit in place keeps the photo where it is (albums, favourite, date, place) and Photos can revert it. New photo + delete adds the result with the original's date, place and albums, then iOS asks before moving the original to Recently Deleted. Either way the original's camera details and colour profile are carried over.")
                 }
                 Section {
                     TextField("Server URL", text: $server).textInputAutocapitalization(.never).autocorrectionDisabled()

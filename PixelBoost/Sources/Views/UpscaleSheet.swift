@@ -9,6 +9,9 @@ struct UpscaleSheet: View {
     let onCloud: () -> Void
     let choice = UpscaleChoice()
     @State private var autoPick: String?
+    @State private var analysis: PhotoAnalysis?
+    @State private var analyzing = false
+    @State private var showWhy = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -20,6 +23,112 @@ struct UpscaleSheet: View {
                     Button { dismiss() } label: { Image(systemName: "xmark").font(.headline).foregroundStyle(Theme.dim) }
                 }
                 whereCards
+                smartCard
+                if !choice.smart { manualCards }
+                PrimaryButton(title: choice.whereTo == "cloud" ? "Send to PixelBoost Cloud" : "Upscale on this iPhone",
+                              icon: choice.whereTo == "cloud" ? "icloud.and.arrow.up" : "wand.and.stars") {
+                    choice.whereTo == "cloud" ? onCloud() : onDevice()
+                }
+                .padding(.top, 4)
+            }
+            .padding(18)
+        }
+        .task {
+            if let url = app.current {
+                autoPick = await Task.detached { try? Core.engine.autoModel(inputPath: url.path) }.value
+            }
+        }
+        .task(id: "\(choice.whereTo)|\(choice.maxWait)|\(app.current?.path ?? "")") {
+            guard let url = app.current else { return }
+            analyzing = true
+            analysis = await choice.analysis(for: url, cloud: choice.whereTo == "cloud")
+            analyzing = false
+        }
+    }
+
+    // MARK: smart
+
+    private var smartCard: some View {
+        Card {
+            HStack(spacing: 10) {
+                Image(systemName: "sparkles").font(.title3).foregroundStyle(Theme.energy)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Smart settings").font(.subheadline.weight(.bold))
+                    Text(choice.smart ? "Reads this photo and picks everything" : "Off — using your settings below")
+                        .font(.caption).foregroundStyle(Theme.dim)
+                }
+                Spacer()
+                Toggle("", isOn: choice.$smart).labelsHidden().tint(Theme.amber)
+            }
+            if choice.smart {
+                if let a = analysis {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(a.summary).font(.headline)
+                        Text(smartLine(a)).font(.caption.monospacedDigit()).foregroundStyle(Theme.dim)
+                        HStack(spacing: 6) {
+                            meter("Noise", min(Double(a.noise) / 12, 1))
+                            meter("Blocks", Double(a.blocking))
+                            meter("Sharp", min(max((Double(a.sharpness) - 0.4) / 0.45, 0), 1))
+                        }
+                        Button { withAnimation(.snappy) { showWhy.toggle() } } label: {
+                            Label(showWhy ? "Hide why" : "Why these settings", systemImage: showWhy ? "chevron.up" : "chevron.down")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(Theme.amber)
+                        if showWhy {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(a.reasons, id: \.self) { r in
+                                    HStack(alignment: .top, spacing: 6) {
+                                        Text("•").foregroundStyle(Theme.amber)
+                                        Text(r).font(.caption)
+                                    }
+                                }
+                            }
+                        }
+                        if choice.whereTo != "cloud" {
+                            Text("Longest wait on this iPhone").font(.caption).foregroundStyle(Theme.dim).padding(.top, 2)
+                            ChipPicker(options: [(60.0, "1 min"), (180.0, "3 min"), (600.0, "10 min"), (0.0, "No limit")], selection: choice.$maxWait)
+                        }
+                        Button("Customize these settings") { choice.adopt(a) }
+                            .font(.caption.weight(.semibold)).foregroundStyle(Theme.dim).padding(.top, 2)
+                    }
+                } else if analyzing {
+                    HStack(spacing: 8) { ProgressView(); Text("Looking at the photo…").font(.caption).foregroundStyle(Theme.dim) }
+                } else {
+                    Text("Pick a photo first.").font(.caption).foregroundStyle(Theme.dim)
+                }
+            }
+        }
+    }
+
+    private func smartLine(_ a: PhotoAnalysis) -> String {
+        let s = a.settings
+        let w = Int(Float(a.width) * s.scale), h = Int(Float(a.height) * s.scale)
+        var parts = ["\(Int(s.scale))× → \(w) × \(h)", UpscaleChoice.name(s.model), s.fidelity.capitalized, "detail \(Int(s.detail * 100))%"]
+        if s.denoise > 0 { parts.append("denoise \(Int(s.denoise * 100))%") }
+        if s.ensemble > 1 { parts.append(s.ensemble >= 8 ? "Max" : "High") }
+        if choice.whereTo != "cloud", a.estSeconds > 0 { parts.append("≈ \(formatDuration(Double(a.estSeconds)))") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func meter(_ label: String, _ v: Double) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.caption2).foregroundStyle(Theme.dim)
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Theme.card2)
+                    Capsule().fill(Theme.energy).frame(width: max(4, g.size.width * v))
+                }
+            }
+            .frame(height: 5)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: manual
+
+    @ViewBuilder
+    private var manualCards: some View {
                 Card(title: "Size", trailing: outputText) {
                     ChipPicker(options: [(2.0, "2×"), (3.0, "3×"), (4.0, "4×"), (6.0, "6×"), (8.0, "8×")], selection: choice.$scale)
                 }
@@ -40,19 +149,6 @@ struct UpscaleSheet: View {
                     SliderRow(label: "Detail", value: choice.$detail)
                     if choice.model == "fast" { SliderRow(label: "Denoise", value: choice.$denoise) }
                 }
-                PrimaryButton(title: choice.whereTo == "cloud" ? "Send to PixelBoost Cloud" : "Upscale on this iPhone",
-                              icon: choice.whereTo == "cloud" ? "icloud.and.arrow.up" : "wand.and.stars") {
-                    choice.whereTo == "cloud" ? onCloud() : onDevice()
-                }
-                .padding(.top, 4)
-            }
-            .padding(18)
-        }
-        .task {
-            if let url = app.current {
-                autoPick = await Task.detached { try? Core.engine.autoModel(inputPath: url.path) }.value
-            }
-        }
     }
 
     // MARK: where
@@ -114,10 +210,23 @@ struct UpscaleSheet: View {
         return p.gflop * Double(max(choice.quality, 1)) * twoPass
     }
 
-    private var deviceEstimate: Double? { gflop(effectiveModel).map { $0 / max(choice.gflops, 1) } }
+    private var deviceEstimate: Double? {
+        if choice.smart, choice.whereTo != "cloud", let a = analysis { return Double(a.estSeconds) }
+        if choice.smart, let a = analysis, let i = app.info {
+            let s = a.settings
+            let p = Core.engine.plan(width: i.width, height: i.height, model: s.model, scale: s.scale, tile: 128)
+            return p.gflop * Double(max(s.ensemble, 1)) * (s.scale > 6 ? 17 : 1) / max(choice.gflops, 1)
+        }
+        return gflop(effectiveModel).map { $0 / max(choice.gflops, 1) }
+    }
 
     /// The server runs the full-strength model for the content at ~150 GFLOP/s.
     private var cloudEstimate: Double? {
+        if choice.smart, let a = analysis, let i = app.info {
+            let s = a.settings
+            let p = Core.engine.plan(width: i.width, height: i.height, model: s.model, scale: s.scale, tile: 128)
+            return p.gflop * Double(max(s.ensemble, 1)) * (s.scale > 6 ? 17 : 1) / 150 + 8
+        }
         let m = choice.model == "auto" ? (effectiveModel == "anime" || effectiveModel == "lineart" ? "anime" : "photo") : choice.model
         return gflop(m).map { $0 / 150 + 8 }
     }

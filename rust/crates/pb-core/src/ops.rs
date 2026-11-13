@@ -159,6 +159,8 @@ pub enum Op {
         #[serde(default = "frame_w")]
         radius: f32,
     },
+    /// Crop to a shape (circle, hexagon, heart...) with optional rings.
+    ShapeCrop(crate::shape::ShapeCrop),
     /// Keystone correction, each -1..1.
     Perspective {
         #[serde(default)]
@@ -223,7 +225,7 @@ impl Op {
     /// masks recorded after it won't line up if it's toggled.
     pub fn changes_geometry(&self) -> bool {
         match self {
-            Op::Rotate { .. } | Op::Crop { .. } | Op::Straighten { .. } | Op::Resize { .. } | Op::Frame { .. } | Op::Perspective { .. } | Op::Flip { .. } => true,
+            Op::Rotate { .. } | Op::Crop { .. } | Op::Straighten { .. } | Op::Resize { .. } | Op::Frame { .. } | Op::Perspective { .. } | Op::Flip { .. } | Op::ShapeCrop(_) => true,
             Op::Chain { ops } => ops.iter().any(|o| o.changes_geometry()),
             _ => false,
         }
@@ -397,6 +399,7 @@ pub fn apply(img: &Image, op: &Op) -> Result<Image, String> {
         }
         Op::Frame { style, width, color, ratio, radius } => out = compose::frame(img, style, *width, *color, *ratio, *radius)?,
         Op::Perspective { vertical, horizontal } => out = compose::perspective(img, *vertical, *horizontal),
+        Op::ShapeCrop(s) => out = crate::shape::render(img, s)?,
     }
     Ok(out)
 }
@@ -443,6 +446,8 @@ mod tests {
             r#"{"op":"text","text":"Hello","x":0.5,"y":0.5,"size":0.3,"font":"heavy","outline":0.08}"#,
             r#"{"op":"frame","style":"polaroid"}"#,
             r#"{"op":"perspective","vertical":0.5}"#,
+            r#"{"op":"shape_crop","shape":"heart","rings":[{"style":"story","width":0.05}]}"#,
+            r#"{"op":"shape_crop","shape":"hexagon","x":0.1,"y":0.1,"w":0.5,"h":0.5,"rotation":30,"background":[1,1,1,1]}"#,
         ] {
             let op = parse(j).unwrap();
             let o = apply(&img, &op).unwrap();

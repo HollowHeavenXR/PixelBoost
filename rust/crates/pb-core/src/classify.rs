@@ -57,7 +57,10 @@ pub fn stats(img: &Image) -> Stats {
 
 /// Content type only: "anime" (drawn) or "photo" (photo / render).
 pub fn content_kind(img: &Image) -> &'static str {
-    let s = stats(img);
+    kind_of(&stats(img))
+}
+
+pub fn kind_of(s: &Stats) -> &'static str {
     if (s.flat > 0.35 && s.texture < 0.013) || s.flat > 0.55 {
         "anime"
     } else {

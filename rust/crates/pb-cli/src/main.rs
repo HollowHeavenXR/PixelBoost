@@ -19,7 +19,11 @@ fn usage() -> ! {
   eval <image dir> <out dir> [--models dir] [--crop n] [--list a,b] [--only ids]
                                        degrade -> upscale -> compare with original
   edit <in> <out> <op json | @file.json | preset:id>   run an editing op (timed)
-  presets                              list built-in presets"
+  presets                              list built-in presets
+  analyze <images...> [--gflops g] [--seconds s] [--cloud] [--degrade soft|noise|jpeg]
+                                       measure photos, print the smart settings
+  replace <original> <result> <out base>   result + original's EXIF/ICC (JPEG/PNG)
+  shape <in> <out.png> <shape> [ring json]  shape crop with rings"
     );
     std::process::exit(2)
 }
@@ -136,6 +140,25 @@ fn main() {
             }
             Ok(())
         }
+        "analyze" if args.len() >= 2 => analyze_cmd(&args),
+        "replace" if args.len() >= 4 => (|| {
+            let bytes = std::fs::read(&args[1]).map_err(|e| e.to_string())?;
+            let m = pb_core::meta::read(&bytes);
+            let (w, h, ext) = pb_core::meta::write_with_meta(&args[2], &format!("{}.tmp", args[3]), &m, 95, true)?;
+            std::fs::rename(format!("{}.tmp", args[3]), format!("{}.{ext}", args[3])).map_err(|e| e.to_string())?;
+            println!("{w}x{h} {ext}  exif: {}  icc: {}", m.exif.as_ref().map(|e| e.len()).unwrap_or(0), m.icc.as_ref().map(|e| e.len()).unwrap_or(0));
+            Ok(())
+        })(),
+        "shape" if args.len() >= 4 => (|| {
+            let rings = args.get(4).map(|s| s.as_str()).unwrap_or("[]");
+            let json = format!(r#"{{"op":"shape_crop","shape":"{}","rings":{rings}}}"#, args[3]);
+            let op = pb_core::ops::parse(&json)?;
+            let img = Image::open(&args[1])?;
+            let t = Instant::now();
+            let out = pb_core::ops::apply(&img, &op)?;
+            println!("{}x{} -> {}x{} in {:.0} ms", img.w, img.h, out.w, out.h, t.elapsed().as_secs_f64() * 1000.0);
+            out.save(&args[2])
+        })(),
         "classify" if args.len() >= 2 => args[1..].iter().try_for_each(|f| {
             let img = Image::open(f)?;
             let s = pb_core::classify::stats(&img);
@@ -148,4 +171,58 @@ fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+}
+
+fn degrade(img: &Image, how: &str) -> Image {
+    use pb_core::resample::{resize, Filter};
+    match how {
+        "soft" => {
+            let s = resize(img, (img.w / 3).max(8), (img.h / 3).max(8), Filter::Box);
+            resize(&s, img.w, img.h, Filter::CatmullRom)
+        }
+        "noise" => {
+            let mut o = img.clone();
+            for (i, p) in o.px.iter_mut().enumerate() {
+                // Approximately Gaussian (sum of 4 uniforms), sigma ~ 8/255.
+                let n: f32 = (0..4).map(|k| pb_core::filters::hash_noise((i % img.w) as u32, (i / img.w) as u32, k)).sum::<f32>() - 2.0;
+                for c in 0..3 {
+                    p[c] = (p[c] + n * 0.054).clamp(0.0, 1.0);
+                }
+            }
+            o
+        }
+        "jpeg" => {
+            let bytes = img.encode(pb_core::image::Format::Jpeg, 20).unwrap();
+            Image::decode(&bytes).unwrap()
+        }
+        _ => img.clone(),
+    }
+}
+
+fn analyze_cmd(args: &[String]) -> Result<(), String> {
+    let b = pb_core::analyze::Budget {
+        gflops: flag(args, "--gflops").and_then(|v| v.parse().ok()).unwrap_or(40.0),
+        max_seconds: flag(args, "--seconds").and_then(|v| v.parse().ok()).unwrap_or(180.0),
+        max_output_mp: 120.0,
+        cloud: args.iter().any(|a| a == "--cloud"),
+    };
+    let how = flag(args, "--degrade").unwrap_or("");
+    let verbose = args.iter().any(|a| a == "-v");
+    let skip: Vec<&str> = ["--gflops", "--seconds", "--degrade"].iter().filter_map(|f| flag(args, f)).collect();
+    for f in args[1..].iter().filter(|a| !a.starts_with('-') && !skip.contains(&a.as_str())) {
+        let t = Instant::now();
+        let m = if how.is_empty() { pb_core::analyze::measure_file(f)? } else { pb_core::analyze::measure(&degrade(&Image::open(f)?, how)) };
+        let r = pb_core::analyze::recommend(&m, b);
+        let name = Path::new(f).file_name().unwrap().to_string_lossy();
+        println!(
+            "{name:<10} {:>4}x{:<4} {:<5} noise {:>5.2} block {:.2} sharp {:.3} skin {:.2} | {} {}x {} d{:.2} dn{:.2} e{} ~{:.0}s  ({:.0} ms)",
+            m.width, m.height, m.kind, m.noise, m.blocking, m.sharpness, m.skin, r.model, r.scale, r.fidelity, r.detail, r.denoise, r.ensemble, r.est_seconds, t.elapsed().as_secs_f64() * 1000.0
+        );
+        if verbose {
+            for w in &r.reasons {
+                println!("    - {w}");
+            }
+        }
+    }
+    Ok(())
 }

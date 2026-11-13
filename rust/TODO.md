@@ -26,3 +26,18 @@ Overall tracker: ../RUST-REMAKE.md
 - [ ] Own subject segmentation (Portrait blur and Cutout use Vision now).
 - [ ] Text: kerning is per pair only (no shaping) — Arabic / Indic scripts
       need a shaper (rustybuzz).
+
+## Smart settings / replace / shapes (5.3)
+
+- [x] `analyze` (noise, blocking, softness, skin, kind -> settings within
+      a compute budget), `meta` (EXIF/ICC incl. HEIC), `shape` (16 SDF
+      shapes, 8 ring styles), pb-ffi `smart.rs`, CLI analyze/replace/shape.
+- [ ] Skin share is a colour-box heuristic: anime skin tones read as skin
+      too (only used for photos). A small face detector would be better.
+- [ ] Learn the analyzer thresholds from more labelled photos (phone
+      shots with real sensor noise; the gallery set is mostly renders/art).
+- [ ] Analyzer could also pick the cloud's model per region (faces Clean,
+      background Photo) once tiles can mix models.
+- [ ] Dotted / dashed rings space marks by angle: on shapes with deep
+      notches (flower) the spacing is uneven; arc-length spacing would fix it.
+- [ ] HEIC output for replacements (now JPEG q95, PNG when transparent).

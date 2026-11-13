@@ -81,7 +81,21 @@ final class CloudStore: ObservableObject {
     // MARK: actions
 
     /// Upload a photo; keeps running briefly if the app is closed mid-upload.
-    func send(_ file: URL, settings: [String: Any], label: String, app: AppModel) {
+    /// Library asset each job's photo came from (job id -> local identifier).
+    private static let assetsKey = "cloud.assets"
+
+    func sourceAsset(_ j: CloudJob) -> String? {
+        (UserDefaults.standard.dictionary(forKey: Self.assetsKey) as? [String: String])?[j.id]
+    }
+
+    private static func remember(asset: String, job: String) {
+        var d = (UserDefaults.standard.dictionary(forKey: assetsKey) as? [String: String]) ?? [:]
+        if d.count > 300 { d.removeAll() }
+        d[job] = asset
+        UserDefaults.standard.set(d, forKey: assetsKey)
+    }
+
+    func send(_ file: URL, settings: [String: Any], label: String, app: AppModel, asset: String? = nil) {
         let key = UUID().uuidString
         sending.append(key)
         let json = String(decoding: (try? JSONSerialization.data(withJSONObject: settings)) ?? Data("{}".utf8), as: UTF8.self)
@@ -93,6 +107,7 @@ final class CloudStore: ObservableObject {
             sending.removeAll { $0 == key }
             switch r {
             case .success(let job):
+                if let asset { Self.remember(asset: asset, job: job.id) }
                 jobs.insert(job, at: 0)
                 app.flash("Sent to PixelBoost Cloud — you can close the app")
                 app.log("cloud_send", ["w": job.inWidth, "h": job.inHeight])
